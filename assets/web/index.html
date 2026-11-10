@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tonic — Live Key &amp; Chord Detection</title>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#2a78d6" />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4 15v-6M8.5 18v-12M13 20v-16M17.5 18v-12M21 15v-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+      </svg>
+      <h1>Tonic</h1>
+      <span class="debug-badge" id="debug-badge" hidden>debug</span>
+    </div>
+    <p class="tagline">Listen live or upload a track — detect the key, see the chords.</p>
+  </header>
+
+  <main class="panels">
+    <section class="card" id="live-card">
+      <div class="card-head">
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" stroke="currentColor" stroke-width="1.6" />
+          <path d="M19 11a7 7 0 0 1-14 0M12 18v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <h2>Live listening</h2>
+        <span class="status-dot" id="live-status-dot" aria-hidden="true"></span>
+      </div>
+      <p class="card-sub">Uses your microphone. Nothing is recorded or stored.</p>
+      <button class="btn btn-primary" id="live-toggle">Start listening</button>
+      <p class="hint" id="live-hint">Play or perform some music near your mic, then wait a couple of seconds.</p>
+      <div class="results" id="live-results" hidden></div>
+    </section>
+
+    <section class="card" id="file-card">
+      <div class="card-head">
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 3v12m0-12 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <h2>Analyze a file</h2>
+      </div>
+      <p class="card-sub">WAV or MP3.</p>
+      <label class="dropzone" id="dropzone" for="file-input">
+        <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 16V6m0 0 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <span id="dropzone-label">Choose an audio file to analyze</span>
+        <input type="file" id="file-input" accept=".wav,.mp3,audio/wav,audio/mpeg" hidden />
+      </label>
+      <p class="hint" id="file-hint"></p>
+      <div class="results" id="file-results" hidden></div>
+    </section>
+  </main>
+
+  <template id="result-template">
+    <div class="chord-now" data-field="currentChordBlock" hidden>
+      <div class="stat-label">Chord playing now</div>
+      <div class="chord-now-value" data-field="currentChordValue">—</div>
+    </div>
+
+    <p class="warming" data-field="warming" hidden>Detecting the key — a couple more seconds of audio needed…</p>
+
+    <div class="stat-tile" data-field="scaleBlock" hidden>
+      <div class="stat-label">Detected scale</div>
+      <div class="stat-value" data-field="topScale">—</div>
+      <div class="meter meter-lg">
+        <div class="meter-track"><div class="meter-fill" data-field="confidenceFill"></div></div>
+        <span class="meter-value" data-field="confidenceLabel"></span>
+      </div>
+    </div>
+
+    <div class="chords-block" data-field="chordsBlock" hidden>
+      <div class="block-head">
+        <h3>Chords in this scale</h3>
+        <ul class="legend">
+          <li><span class="swatch swatch-major"></span>Major</li>
+          <li><span class="swatch swatch-minor"></span>Minor</li>
+          <li><span class="swatch swatch-dim"></span>Diminished</li>
+        </ul>
+      </div>
+      <div class="level-tabs" data-field="levelTabs">
+        <button type="button" class="level-tab" data-level="easy">Easy · 3</button>
+        <button type="button" class="level-tab" data-level="medium">Medium · 4</button>
+        <button type="button" class="level-tab" data-level="hard">Hard · 5</button>
+        <button type="button" class="level-tab" data-level="full">Full · 7</button>
+      </div>
+      <ol class="chord-grid" data-field="chords"></ol>
+    </div>
+
+    <div class="similar-block" data-field="similarBlock" hidden>
+      <h3>Similar scales</h3>
+      <ol class="similar-list" data-field="similar"></ol>
+    </div>
+  </template>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

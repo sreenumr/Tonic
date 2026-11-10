@@ -1,0 +1,38 @@
+# Build output
+/dist/
+
+# Go
+*.exe
+*.exe~
+*.test
+*.out
+
+# Self-signed dev TLS cert (regenerated automatically; contains a private key)
+/certs/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/libs/*.aar
+android/app/libs/*-sources.jar
+android/.cxx/
+android/captures/
+android/*.iml
+android/.idea/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / scratch
+*.log
