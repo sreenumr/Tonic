@@ -16,7 +16,7 @@ import (
 
 // analysisInterval is how often the rolling window is re-analyzed and a
 // fresh result pushed to the client.
-const analysisInterval = 500 * time.Millisecond
+const analysisInterval = 250 * time.Millisecond
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,

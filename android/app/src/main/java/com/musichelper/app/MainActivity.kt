@@ -253,6 +253,8 @@ class MainActivity : ComponentActivity() {
             var sumSquares = 0.0
             var samplesSinceLog = 0
             var chunksSinceLog = 0
+            var envPeak = 0f
+            var currentGain = 1f
 
             while (capturing) {
                 val read = recorder.read(shortBuf, 0, chunkSamples)
@@ -268,16 +270,26 @@ class MainActivity : ComponentActivity() {
                 // floor so we don't amplify silence into false content)
                 // before sending samples for analysis - independent of
                 // whatever gain/AGC behavior this device's mic driver has.
+                //
+                // The gain follows a decaying peak envelope (instant attack,
+                // ~0.3s release) and is ramped sample-by-sample from the
+                // previous chunk's value. Jumping the gain at every 46ms
+                // chunk boundary put a step discontinuity - a broadband
+                // click - into the signal ~20 times a second, which smeared
+                // energy across every pitch class and hurt chord detection.
                 var chunkPeak = 0
                 for (i in 0 until read) {
                     val abs = if (shortBuf[i] < 0) -shortBuf[i].toInt() else shortBuf[i].toInt()
                     if (abs > chunkPeak) chunkPeak = abs
                 }
-                val gain = if (chunkPeak > noiseFloor) {
-                    (targetPeak / chunkPeak).coerceAtMost(maxGain)
+                envPeak = maxOf(chunkPeak.toFloat(), envPeak * 0.85f)
+                val targetGain = if (envPeak > noiseFloor) {
+                    (targetPeak / envPeak).coerceAtMost(maxGain)
                 } else {
                     1f
                 }
+                val startGain = currentGain
+                currentGain = targetGain
 
                 val bytes = ByteArray(read * 4)
                 val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -286,6 +298,7 @@ class MainActivity : ComponentActivity() {
                     val abs = if (s < 0) -s.toInt() else s.toInt()
                     if (abs > peak) peak = abs
                     if (abs >= 32760) clipped++
+                    val gain = startGain + (targetGain - startGain) * (i + 1) / read
                     val gained = (s.toFloat() * gain / 32768f).coerceIn(-1f, 1f)
                     sumSquares += gained * gained
                     bb.putFloat(gained)

@@ -64,12 +64,34 @@
     <div class="chord-now" data-field="currentChordBlock" hidden>
       <div class="stat-label">Chord playing now</div>
       <div class="chord-now-value" data-field="currentChordValue">—</div>
+      <div class="chord-now-tones" data-field="currentChordTones"></div>
+    </div>
+
+    <div class="switches">
+      <label class="switch-row">
+        <input type="checkbox" data-field="notesToggle" />
+        <span class="switch" aria-hidden="true"></span>
+        <span class="switch-label">Show detected notes</span>
+      </label>
+      <label class="switch-row">
+        <input type="checkbox" data-field="chordsToggle" />
+        <span class="switch" aria-hidden="true"></span>
+        <span class="switch-label">Show chords in this key</span>
+      </label>
+    </div>
+
+    <div class="notes-block" data-field="notesBlock" hidden>
+      <div class="block-head">
+        <div class="stat-label" data-field="notesLabel">Notes detected</div>
+        <div class="notes-summary" data-field="notesSummary"></div>
+      </div>
+      <ol class="note-strip" data-field="noteStrip"></ol>
     </div>
 
     <p class="warming" data-field="warming" hidden>Detecting the key — a couple more seconds of audio needed…</p>
 
     <div class="stat-tile" data-field="scaleBlock" hidden>
-      <div class="stat-label">Detected scale</div>
+      <div class="stat-label">Detected key</div>
       <div class="stat-value" data-field="topScale">—</div>
       <div class="meter meter-lg">
         <div class="meter-track"><div class="meter-fill" data-field="confidenceFill"></div></div>
@@ -79,7 +101,7 @@
 
     <div class="chords-block" data-field="chordsBlock" hidden>
       <div class="block-head">
-        <h3>Chords in this scale</h3>
+        <h3>Chords in this key</h3>
         <ul class="legend">
           <li><span class="swatch swatch-major"></span>Major</li>
           <li><span class="swatch swatch-minor"></span>Minor</li>
@@ -95,8 +117,20 @@
       <ol class="chord-grid" data-field="chords"></ol>
     </div>
 
+    <div class="fifths-block" data-field="fifthsBlock">
+      <div class="block-head">
+        <h3>Circle of fifths</h3>
+        <ul class="legend">
+          <li><span class="swatch swatch-key"></span>In this key</li>
+          <li><span class="swatch swatch-now"></span>Playing now</li>
+        </ul>
+      </div>
+      <div class="fifths-wrap" data-field="fifthsWrap"></div>
+      <p class="fifths-caption" data-field="fifthsCaption"></p>
+    </div>
+
     <div class="similar-block" data-field="similarBlock" hidden>
-      <h3>Similar scales</h3>
+      <h3>Similar keys</h3>
       <ol class="similar-list" data-field="similar"></ol>
     </div>
   </template>
