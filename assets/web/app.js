@@ -294,10 +294,17 @@ function renderResult(container, result, state) {
   state.lastResult = result;
   const fields = container._resultNodes || buildResultNodes(container, state);
 
-  fields.currentChordBlock.hidden = !result.currentChord;
-  if (result.currentChord) {
-    fields.currentChordValue.textContent = result.currentChord.name || chordLabel(result.currentChord);
-    fields.currentChordTones.textContent = (result.currentChord.notes || []).join(" · ");
+  // The live panel keeps "Chord playing now" in place the whole time (just
+  // dimmed to "—" between chords) instead of removing and re-adding it,
+  // which made everything below jump. File results never have a live chord.
+  const cc = result.currentChord;
+  fields.currentChordBlock.hidden = container !== liveResults;
+  fields.currentChordBlock.classList.toggle("idle", !cc);
+  fields.currentChordValue.textContent = cc ? cc.name || chordLabel(cc) : "—";
+  if (cc) fields.currentChordTones.textContent = (cc.notes || []).join(" · ");
+
+  if (container === liveResults) {
+    setFabChord(cc ? cc.name || chordLabel(cc) : "");
   }
 
   renderNotes(fields, result.notes);
@@ -441,10 +448,31 @@ const livePanelState = createPanelState("Notes detected");
 
 let liveSession = null; // browser path: { audioContext, stream, ws, workletNode }; native path: {} while listening
 
+// Floating copy of the start/stop button: appears when the main button is
+// scrolled off screen (e.g. while looking at the circle of fifths) and just
+// forwards to it, so all start/stop logic stays in one place.
+const liveFab = document.getElementById("live-fab");
+const liveFabChord = document.getElementById("live-fab-chord");
+liveFab.addEventListener("click", () => liveToggle.click());
+if ("IntersectionObserver" in window) {
+  new IntersectionObserver((entries) => {
+    liveFab.classList.toggle("visible", !entries[0].isIntersecting);
+  }).observe(liveToggle);
+} else {
+  liveFab.classList.add("visible");
+}
+
+function setFabChord(text) {
+  liveFabChord.textContent = text || "";
+  liveFab.classList.toggle("has-chord", !!text);
+}
+
 function setLiveUIListening() {
   liveToggle.disabled = false;
   liveToggle.textContent = "Stop listening";
   liveToggle.classList.add("stop");
+  liveFab.classList.add("stop");
+  liveFab.setAttribute("aria-label", "Stop listening");
   liveStatusDot.classList.add("live");
   liveHint.textContent = "Listening… the chord updates fast, the key settles in after a few chords.";
 }
@@ -453,6 +481,9 @@ function setLiveUIIdle(message) {
   liveToggle.disabled = false;
   liveToggle.textContent = "Start listening";
   liveToggle.classList.remove("stop");
+  liveFab.classList.remove("stop");
+  liveFab.setAttribute("aria-label", "Start listening");
+  setFabChord("");
   liveStatusDot.classList.remove("live");
   liveHint.textContent = message || "Play or perform some music near your mic, then wait a couple of seconds.";
 }

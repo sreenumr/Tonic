@@ -2,7 +2,7 @@
 // instantly (and works offline once loaded) while leaving the analysis
 // endpoints (/api/analyze, /ws) untouched - those need a live server, and
 // a WebSocket upgrade can't be intercepted by a service worker anyway.
-const CACHE_NAME = "tonic-shell-v6";
+const CACHE_NAME = "tonic-shell-v9";
 const SHELL_FILES = [
   "/",
   "/style.css",
@@ -33,18 +33,20 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // Network-first: the server is always local (embedded in the Android
+  // app, or the desktop exe), so the network copy is instant and always
+  // current. The old cache-first strategy served the *previous* build's
+  // page on the first launch after every update. The cache is now only an
+  // offline fallback (e.g. an installed desktop PWA with the server off).
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((response) => {
-          if (response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    fetch(event.request)
+      .then((response) => {
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

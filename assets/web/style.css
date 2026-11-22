@@ -71,6 +71,13 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must always win. Without this, any rule that sets
+   `display` (e.g. .chord-now's display:flex) silently overrides it - which
+   left "Chord playing now" showing the last chord after playing stopped. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background:
@@ -321,10 +328,15 @@ body {
 
 /* Current chord - fast-updating, visually distinct from the scale tile */
 
+/* Fixed two-row layout (label / chord + its notes) so the box keeps the
+   same size whatever is playing - it used to wrap onto a second line for
+   longer names like "Bsus4" and jump the whole page around. */
 .chord-now {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
-  gap: 10px;
+  column-gap: 12px;
+  row-gap: 2px;
   padding: 12px 16px;
   border-radius: var(--radius-control);
   background: linear-gradient(135deg, color-mix(in srgb, var(--series-blue) 12%, transparent), color-mix(in srgb, var(--series-blue) 4%, transparent));
@@ -333,25 +345,105 @@ body {
 }
 
 .chord-now .stat-label {
+  grid-column: 1 / -1;
   margin: 0;
 }
 
 .chord-now-value {
-  font-size: 23px;
+  font-size: 26px;
+  line-height: 1.2;
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--series-blue);
-}
-
-.chord-now {
-  flex-wrap: wrap;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.2s ease, opacity 0.2s ease;
 }
 
 .chord-now-tones {
-  margin-left: auto;
   color: var(--text-secondary);
   font-size: 13px;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  transition: opacity 0.2s ease;
+}
+
+/* Nothing playing: keep the box, just dim it. */
+.chord-now.idle .chord-now-value {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.chord-now.idle .chord-now-tones {
+  opacity: 0;
+}
+
+/* Floating start/stop button */
+
+.fab {
+  position: fixed;
+  right: 18px;
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 58px;
+  min-width: 58px;
+  padding: 0 17px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent-grad);
+  color: #fff;
+  font: inherit;
+  font-size: 19px;
+  font-weight: 700;
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  opacity: 0;
+  transform: translateY(16px) scale(0.9);
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease, background 0.2s ease;
+}
+
+.fab.visible {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.fab:active {
+  transform: scale(0.95);
+}
+
+.fab.stop {
+  background: linear-gradient(135deg, var(--critical) 0%, color-mix(in srgb, var(--critical) 70%, #fff) 100%);
+}
+
+.fab:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--series-blue) 45%, transparent);
+  outline-offset: 3px;
+}
+
+.fab-icon {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+
+.fab-stop,
+.fab.stop .fab-mic {
+  display: none;
+}
+
+.fab.stop .fab-stop {
+  display: block;
+}
+
+.fab-chord:empty {
+  display: none;
 }
 
 /* Display toggles */
@@ -893,4 +985,10 @@ svg.fifths {
 .chords-block[hidden] + .fifths-block {
   border-top: none;
   padding-top: 0;
+}
+
+/* Room at the end of the page so the floating button never covers the
+   last rows (similar keys, file results). */
+body {
+  padding-bottom: 96px;
 }

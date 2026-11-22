@@ -60,6 +60,19 @@
     </section>
   </main>
 
+  <!-- Floating start/stop, shown once the main button scrolls out of view;
+       while listening it also carries the chord playing now. -->
+  <button type="button" class="fab" id="live-fab" aria-label="Start listening">
+    <svg class="fab-icon fab-mic" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" stroke="currentColor" stroke-width="1.8" />
+      <path d="M19 11a7 7 0 0 1-14 0M12 18v3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+    </svg>
+    <svg class="fab-icon fab-stop" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" fill="currentColor" />
+    </svg>
+    <span class="fab-chord" id="live-fab-chord"></span>
+  </button>
+
   <template id="result-template">
     <div class="chord-now" data-field="currentChordBlock" hidden>
       <div class="stat-label">Chord playing now</div>
