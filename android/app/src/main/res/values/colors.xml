@@ -1,3 +1,5 @@
 <resources>
     <color name="ic_launcher_background">#2A78D6</color>
+    <color name="tonic_bg">#0B0D12</color>
+    <color name="tonic_accent">#4C8DF6</color>
 </resources>

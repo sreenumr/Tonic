@@ -1,9 +1,9 @@
-// MusicHelper frontend: live-mic streaming panel + file-upload panel, both
-// rendering the same result shape returned by the Go backend.
+// Tonic frontend: a single-screen app with two views - Live (mic) and File
+// (upload) - both rendering the same result shape from the Go backend into
+// a fixed layout that's built once up front and then updated in place.
 
-// PWA: cache the app shell for instant loads + offline support. No-op
-// (and harmless) inside the Android app's WebView, which doesn't do
-// install prompts but still benefits from the caching.
+// PWA service worker (network-first; see sw.js). Harmless in the Android
+// WebView.
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch((err) => {
@@ -19,14 +19,13 @@ if (window.AndroidAudio && window.AndroidAudio.isDebugBuild && window.AndroidAud
 
 const resultTemplate = document.getElementById("result-template");
 const DEFAULT_LEVEL = "medium";
-
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-// Display toggles ("Show detected notes", "Show chords in this key"): one
-// app-wide preference each, remembered per device and mirrored by the
-// switches in every results panel.
+
+// Display toggles (dock buttons): one app-wide preference each, remembered
+// per device.
 const PREFS = {
-  notes: { key: "tonic.showNotes", on: false },
-  chords: { key: "tonic.showChords", on: true },
+  notes: { key: "tonic.showNotes", on: false, button: document.getElementById("toggle-notes") },
+  chords: { key: "tonic.showChords", on: true, button: document.getElementById("toggle-chords") },
 };
 for (const name in PREFS) {
   try {
@@ -36,7 +35,7 @@ for (const name in PREFS) {
     /* storage unavailable - keep the default */
   }
 }
-const panels = []; // { container, state } for every panel that has rendered
+const panels = []; // { container, state } for both views
 
 // ---------- Circle of fifths ----------
 //
@@ -193,8 +192,8 @@ function updateCircleCaption(fields) {
   }
   if (!sel) {
     fields.fifthsCaption.textContent = fields.cofKeyInfo
-      ? "The highlighted wedge holds this key's six main chords — neighbours on the circle sound good together. Tap any chord to see its notes."
-      : "Neighbouring chords on the circle sound good together. Tap any chord to see its notes.";
+      ? "Blue wedge = chords in this key · tap any chord for its notes"
+      : "Neighbours on the circle sound good together · tap a chord";
     return;
   }
   const minor = sel.ring === "minor";
@@ -214,22 +213,27 @@ function setPref(name, on) {
   } catch (e) {
     /* ignore */
   }
-  for (const p of panels) {
-    if (p.state.lastResult && p.container._resultNodes) renderResult(p.container, p.state.lastResult, p.state);
-  }
+  syncPrefButtons();
+  for (const p of panels) renderResult(p.container, p.state.lastResult || {}, p.state);
 }
 
-function createPanelState(notesLabel) {
-  return { lastResult: null, level: DEFAULT_LEVEL, notesLabel };
+function syncPrefButtons() {
+  for (const name in PREFS) PREFS[name].button.setAttribute("aria-pressed", PREFS[name].on ? "true" : "false");
+}
+
+for (const name in PREFS) {
+  PREFS[name].button.addEventListener("click", () => setPref(name, !PREFS[name].on));
+}
+syncPrefButtons();
+
+function createPanelState(kind) {
+  return { kind, lastResult: null, level: DEFAULT_LEVEL, fileName: "", chordsSig: "" };
 }
 
 /**
- * Builds the result DOM from the <template> once per container and caches
- * field references on it (container._resultNodes), so later updates can
- * mutate the existing nodes in place instead of tearing the whole block
- * down and rebuilding it - which used to replay the .results > * entrance
- * animation (style.css fade-in-up) on every single analysis tick, reading
- * as a constant flash/refresh while listening live.
+ * Builds the result DOM from the <template> once per view and caches field
+ * references (container._resultNodes); every later update mutates those
+ * nodes in place, so nothing is torn down, re-animated or shifted.
  */
 function buildResultNodes(container, state) {
   container.innerHTML = "";
@@ -238,22 +242,18 @@ function buildResultNodes(container, state) {
   const q = (name) => container.querySelector('[data-field="' + name + '"]');
   const fields = {
     currentChordBlock: q("currentChordBlock"),
+    nowLabel: q("nowLabel"),
     currentChordValue: q("currentChordValue"),
     currentChordTones: q("currentChordTones"),
-    notesToggle: q("notesToggle"),
-    chordsToggle: q("chordsToggle"),
-    notesBlock: q("notesBlock"),
-    notesLabel: q("notesLabel"),
-    notesSummary: q("notesSummary"),
-    noteStrip: q("noteStrip"),
-    noteCells: [],
-    fifthsWrap: q("fifthsWrap"),
-    fifthsCaption: q("fifthsCaption"),
-    warming: q("warming"),
     scaleBlock: q("scaleBlock"),
     topScale: q("topScale"),
     confidenceFill: q("confidenceFill"),
     confidenceLabel: q("confidenceLabel"),
+    notesBlock: q("notesBlock"),
+    noteStrip: q("noteStrip"),
+    noteCells: [],
+    fifthsWrap: q("fifthsWrap"),
+    fifthsCaption: q("fifthsCaption"),
     chordsBlock: q("chordsBlock"),
     chords: q("chords"),
     similarBlock: q("similarBlock"),
@@ -264,7 +264,7 @@ function buildResultNodes(container, state) {
   fields.levelTabs.forEach((btn) => {
     btn.addEventListener("click", () => {
       state.level = btn.dataset.level;
-      renderResult(container, state.lastResult, state);
+      renderResult(container, state.lastResult || {}, state);
     });
   });
 
@@ -276,89 +276,105 @@ function buildResultNodes(container, state) {
     fields.noteCells.push({ li, fill: li.querySelector(".note-fill") });
   }
   buildCircle(fields);
-  fields.notesLabel.textContent = state.notesLabel || "Notes detected";
-  fields.notesToggle.addEventListener("change", () => setPref("notes", fields.notesToggle.checked));
-  fields.chordsToggle.addEventListener("change", () => setPref("chords", fields.chordsToggle.checked));
 
   if (!panels.some((p) => p.container === container)) panels.push({ container, state });
   container._resultNodes = fields;
   return fields;
 }
 
+/** Triad-level label of a detected chord ("G7" -> "G", "Am7" -> "Am"). */
+function triadLabel(cc) {
+  if (!cc) return "";
+  if (cc.quality === "minor" || cc.quality === "minor7") return cc.root + "m";
+  if (cc.quality === "diminished") return cc.root + "°";
+  if (["major", "dominant7", "major7"].includes(cc.quality)) return cc.root;
+  return "";
+}
+
 /**
- * Renders an analysis Result (see internal/analysis.Result) into container,
- * remembering the raw result + selected chord-progression level in `state`
- * so switching levels re-renders instantly without another request.
+ * Renders an analysis Result (see internal/analysis.Result; {} = empty
+ * placeholder state) into a view.
  */
 function renderResult(container, result, state) {
   state.lastResult = result;
   const fields = container._resultNodes || buildResultNodes(container, state);
+  const live = state.kind === "live";
+  const cc = live ? result.currentChord : null;
 
-  // The live panel keeps "Chord playing now" in place the whole time (just
-  // dimmed to "—" between chords) instead of removing and re-adding it,
-  // which made everything below jump. File results never have a live chord.
-  const cc = result.currentChord;
-  fields.currentChordBlock.hidden = container !== liveResults;
-  fields.currentChordBlock.classList.toggle("idle", !cc);
-  fields.currentChordValue.textContent = cc ? cc.name || chordLabel(cc) : "—";
-  if (cc) fields.currentChordTones.textContent = (cc.notes || []).join(" · ");
+  // Hero, left: the chord playing now (live) or the track (file).
+  if (live) {
+    fields.currentChordBlock.classList.toggle("idle", !cc);
+    fields.currentChordValue.textContent = cc ? cc.name || chordLabel(cc) : "—";
+    if (cc) fields.currentChordTones.textContent = (cc.notes || []).join(" · ");
+  } else {
+    fields.currentChordBlock.classList.add("is-file");
+    fields.currentChordBlock.classList.toggle("idle", !state.fileName);
+    fields.nowLabel.textContent = "Track";
+    fields.currentChordValue.textContent = state.fileName || "No file yet";
+    fields.currentChordTones.textContent = state.fileName ? "Whole-song analysis" : "Tap ⬆ below to pick a WAV or MP3";
+  }
 
-  if (container === liveResults) {
-    setFabChord(cc ? cc.name || chordLabel(cc) : "");
+  // Hero, right: the key.
+  const hasScale = !!result.topScale;
+  fields.scaleBlock.classList.toggle("pending", !hasScale);
+  if (hasScale) {
+    fields.topScale.textContent = result.topScale;
+    const pct = Math.max(0, Math.min(1, result.confidence)) * 100;
+    fields.confidenceFill.style.width = pct.toFixed(0) + "%";
+    fields.confidenceLabel.textContent = pct.toFixed(0) + "%";
+  } else {
+    fields.topScale.textContent = live && liveSession ? "Play a few chords…" : "—";
   }
 
   renderNotes(fields, result.notes);
   renderCircle(fields, result);
 
-  const hasScale = !!result.topScale;
-  fields.warming.hidden = hasScale;
-  fields.scaleBlock.hidden = !hasScale;
-  fields.chordsToggle.checked = PREFS.chords.on;
-  fields.chordsBlock.hidden = !hasScale || !PREFS.chords.on;
-  fields.similarBlock.hidden = !hasScale;
-
-  if (hasScale) {
-    fields.topScale.textContent = result.topScale;
-
-    const pct = Math.max(0, Math.min(1, result.confidence)) * 100;
-    fields.confidenceFill.style.width = pct.toFixed(0) + "%";
-    fields.confidenceLabel.textContent = pct.toFixed(0) + "%";
-
-    fields.levelTabs.forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.level === state.level);
-    });
-
-    const chords = (result.chords && result.chords[state.level]) || [];
+  // Chords in key (only rebuilt when the key or level changes).
+  fields.chordsBlock.hidden = !PREFS.chords.on;
+  fields.levelTabs.forEach((btn) => btn.classList.toggle("active", btn.dataset.level === state.level));
+  const sig = (result.topScale || "") + "|" + state.level;
+  if (sig !== state.chordsSig) {
+    state.chordsSig = sig;
     fields.chords.innerHTML = "";
+    const chords = (hasScale && result.chords && result.chords[state.level]) || [];
+    if (!chords.length) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "Chords appear once the key is found";
+      fields.chords.appendChild(li);
+    }
     for (const chord of chords) {
       const li = document.createElement("li");
       li.className = "chord-chip quality-" + chord.quality;
-      li.innerHTML =
-        '<div class="roman">' + chord.roman + "</div>" +
-        '<div class="name">' + chordLabel(chord) + "</div>" +
-        '<div class="notes">' + chord.notes.join(" ") + "</div>";
+      li.dataset.label = chordLabel(chord);
+      li.innerHTML = '<span class="roman">' + chord.roman + '</span><span class="name">' + chordLabel(chord) + "</span>";
       fields.chords.appendChild(li);
     }
-
-    fields.similar.innerHTML = "";
-    for (const cand of result.similar || []) {
-      const candPct = Math.max(0, Math.min(1, cand.confidence)) * 100;
-      const li = document.createElement("li");
-      li.className = "similar-row";
-      li.innerHTML =
-        '<span class="name">' + cand.name + "</span>" +
-        '<span class="meter"><span class="meter-track"><span class="meter-fill" style="width:' +
-        candPct.toFixed(0) + '%"></span></span></span>' +
-        '<span class="pct">' + candPct.toFixed(0) + "%</span>";
-      fields.similar.appendChild(li);
-    }
   }
+  const nowLabel = triadLabel(cc);
+  fields.chords.querySelectorAll(".chord-chip").forEach((li) => {
+    li.classList.toggle("now", !!nowLabel && li.dataset.label === nowLabel);
+  });
 
-  container.hidden = false;
+  // Similar keys, one line.
+  fields.similar.innerHTML = "";
+  const similar = (hasScale && result.similar) || [];
+  if (!similar.length) {
+    fields.similar.textContent = "—";
+  } else {
+    similar.slice(0, 3).forEach((cand, i) => {
+      if (i) fields.similar.appendChild(document.createTextNode("  ·  "));
+      const name = document.createElement("span");
+      name.textContent = cand.name.replace(" Major", " major").replace(" Minor", " minor") + " ";
+      const pct = document.createElement("span");
+      pct.className = "pct";
+      pct.textContent = Math.round(Math.max(0, Math.min(1, cand.confidence)) * 100) + "%";
+      fields.similar.append(name, pct);
+    });
+  }
 }
 
 function renderNotes(fields, notes) {
-  fields.notesToggle.checked = PREFS.notes.on;
   fields.notesBlock.hidden = !PREFS.notes.on;
   if (!PREFS.notes.on) return;
 
@@ -369,12 +385,6 @@ function renderNotes(fields, notes) {
     cell.li.classList.toggle("active", active.has(NOTE_NAMES[pc]));
     cell.li.classList.toggle("bass", !!notes && notes.bass === NOTE_NAMES[pc]);
   });
-
-  if (!notes || !notes.active.length) {
-    fields.notesSummary.textContent = "Listening for notes…";
-  } else {
-    fields.notesSummary.textContent = notes.active.join(" · ") + (notes.bass ? "   ·   bass " + notes.bass : "");
-  }
 }
 
 function chordLabel(chord) {
@@ -383,45 +393,91 @@ function chordLabel(chord) {
   return chord.root;
 }
 
-function showError(container, message) {
-  container._resultNodes = null;
-  container.hidden = false;
-  container.innerHTML = '<p class="error-message"></p>';
-  container.querySelector(".error-message").textContent = message;
+// ---------- Views, status line, main button ----------
+
+const liveToggle = document.getElementById("live-toggle"); // the dock's main button
+const liveResults = document.getElementById("live-results");
+const fileResults = document.getElementById("file-results");
+const liveStatusDot = document.getElementById("live-status-dot");
+const statusEl = document.getElementById("status");
+const fileInput = document.getElementById("file-input");
+const livePanelState = createPanelState("live");
+const filePanelState = createPanelState("file");
+
+let liveSession = null; // browser path: { audioContext, stream, ws, workletNode }; native path: {} while listening
+let activeView = "live";
+const statusText = {
+  live: { text: "Tap the mic and play some chords", error: false },
+  file: { text: "Analyze a WAV or MP3 from your device", error: false },
+};
+
+function setStatus(view, text, isError) {
+  statusText[view] = { text: text || "", error: !!isError };
+  if (view === activeView) {
+    statusEl.textContent = statusText[view].text;
+    statusEl.classList.toggle("error", statusText[view].error);
+  }
 }
 
-// ---------- File upload panel ----------
+function syncMainButton() {
+  const fileMode = activeView === "file";
+  liveToggle.classList.toggle("upload", fileMode);
+  liveToggle.classList.toggle("stop", !fileMode && !!liveSession);
+  liveToggle.setAttribute("aria-label", fileMode ? "Choose an audio file" : liveSession ? "Stop listening" : "Start listening");
+}
 
-const fileInput = document.getElementById("file-input");
-const dropzone = document.getElementById("dropzone");
-const fileResults = document.getElementById("file-results");
-const fileHint = document.getElementById("file-hint");
-const filePanelState = createPanelState("Notes in this track");
+function switchView(view) {
+  activeView = view;
+  document.querySelectorAll(".tab").forEach((t) => {
+    const on = t.dataset.view === view;
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.getElementById("view-live").hidden = view !== "live";
+  document.getElementById("view-file").hidden = view !== "file";
+  setStatus(view, statusText[view].text, statusText[view].error);
+  syncMainButton();
+}
+
+document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+
+// In File view the main button picks a file; in Live view it starts/stops.
+// (Capturing listener so it runs before the live start/stop handler below.)
+liveToggle.addEventListener(
+  "click",
+  (e) => {
+    if (activeView === "file") {
+      e.stopImmediatePropagation();
+      fileInput.click();
+    }
+  },
+  true
+);
+
+// Build both views in their empty state up front: the layout is final from
+// the first frame and results only fill it in.
+renderResult(liveResults, {}, livePanelState);
+renderResult(fileResults, {}, filePanelState);
+switchView("live");
+
+// ---------- File view ----------
 
 fileInput.addEventListener("change", () => {
   if (fileInput.files[0]) analyzeFile(fileInput.files[0]);
+  fileInput.value = "";
 });
 
-["dragenter", "dragover"].forEach((evt) =>
-  dropzone.addEventListener(evt, (e) => {
-    e.preventDefault();
-    dropzone.classList.add("dragover");
-  })
-);
-["dragleave", "drop"].forEach((evt) =>
-  dropzone.addEventListener(evt, (e) => {
-    e.preventDefault();
-    dropzone.classList.remove("dragover");
-  })
-);
-dropzone.addEventListener("drop", (e) => {
+const fileView = document.getElementById("view-file");
+["dragenter", "dragover"].forEach((evt) => fileView.addEventListener(evt, (e) => e.preventDefault()));
+fileView.addEventListener("drop", (e) => {
+  e.preventDefault();
   const file = e.dataTransfer.files[0];
   if (file) analyzeFile(file);
 });
 
 async function analyzeFile(file) {
-  fileHint.textContent = "Analyzing " + file.name + "…";
-  fileResults.hidden = true;
+  setStatus("file", "Analyzing " + file.name + "…");
+  liveToggle.disabled = true;
 
   const form = new FormData();
   form.append("audio", file);
@@ -430,62 +486,39 @@ async function analyzeFile(file) {
     const res = await fetch("/api/analyze", { method: "POST", body: form });
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || "analysis failed");
-    fileHint.textContent = "Analyzed " + file.name;
+    filePanelState.fileName = file.name;
     renderResult(fileResults, body, filePanelState);
+    setStatus("file", "Done — tap ⬆ to analyze another file");
   } catch (err) {
-    fileHint.textContent = "";
-    showError(fileResults, "Could not analyze file: " + err.message);
+    setStatus("file", "Could not analyze file: " + err.message, true);
+  } finally {
+    liveToggle.disabled = false;
   }
 }
 
-// ---------- Live mic panel ----------
+// ---------- Live view ----------
 
-const liveToggle = document.getElementById("live-toggle");
-const liveResults = document.getElementById("live-results");
-const liveHint = document.getElementById("live-hint");
-const liveStatusDot = document.getElementById("live-status-dot");
-const livePanelState = createPanelState("Notes detected");
-
-let liveSession = null; // browser path: { audioContext, stream, ws, workletNode }; native path: {} while listening
-
-// Floating copy of the start/stop button: appears when the main button is
-// scrolled off screen (e.g. while looking at the circle of fifths) and just
-// forwards to it, so all start/stop logic stays in one place.
-const liveFab = document.getElementById("live-fab");
-const liveFabChord = document.getElementById("live-fab-chord");
-liveFab.addEventListener("click", () => liveToggle.click());
-if ("IntersectionObserver" in window) {
-  new IntersectionObserver((entries) => {
-    liveFab.classList.toggle("visible", !entries[0].isIntersecting);
-  }).observe(liveToggle);
-} else {
-  liveFab.classList.add("visible");
-}
-
-function setFabChord(text) {
-  liveFabChord.textContent = text || "";
-  liveFab.classList.toggle("has-chord", !!text);
+function resetLivePanel() {
+  livePanelState.lastResult = null;
+  renderResult(liveResults, {}, livePanelState);
 }
 
 function setLiveUIListening() {
   liveToggle.disabled = false;
-  liveToggle.textContent = "Stop listening";
-  liveToggle.classList.add("stop");
-  liveFab.classList.add("stop");
-  liveFab.setAttribute("aria-label", "Stop listening");
   liveStatusDot.classList.add("live");
-  liveHint.textContent = "Listening… the chord updates fast, the key settles in after a few chords.";
+  syncMainButton();
+  setStatus("live", "Listening… the chord updates fast, the key settles in after a few chords.");
+  renderResult(liveResults, livePanelState.lastResult || {}, livePanelState);
 }
 
 function setLiveUIIdle(message) {
   liveToggle.disabled = false;
-  liveToggle.textContent = "Start listening";
-  liveToggle.classList.remove("stop");
-  liveFab.classList.remove("stop");
-  liveFab.setAttribute("aria-label", "Start listening");
-  setFabChord("");
   liveStatusDot.classList.remove("live");
-  liveHint.textContent = message || "Play or perform some music near your mic, then wait a couple of seconds.";
+  syncMainButton();
+  setStatus("live", message || "Stopped — tap the mic to listen again", !!message);
+  // Keep the last key/chords on screen, but nothing is "playing now".
+  const last = livePanelState.lastResult || {};
+  renderResult(liveResults, Object.assign({}, last, { currentChord: null, notes: null }), livePanelState);
 }
 
 if (window.AndroidAudio) {
@@ -497,7 +530,7 @@ if (window.AndroidAudio) {
   window.__nativeAudioResult = function (jsonStr) {
     const result = JSON.parse(jsonStr);
     if (result.error) {
-      showError(liveResults, result.error);
+      setStatus("live", result.error, true);
       return;
     }
     renderResult(liveResults, result, livePanelState);
@@ -515,8 +548,8 @@ if (window.AndroidAudio) {
       setLiveUIIdle();
     } else {
       liveToggle.disabled = true;
-      liveHint.textContent = "Requesting microphone access…";
-      livePanelState.lastResult = null;
+      setStatus("live", "Requesting microphone access…");
+      resetLivePanel();
       liveSession = {};
       window.AndroidAudio.startListening();
       setLiveUIListening();
@@ -533,8 +566,8 @@ if (window.AndroidAudio) {
 
   async function startLive() {
     liveToggle.disabled = true;
-    liveHint.textContent = "Requesting microphone access…";
-    livePanelState.lastResult = null;
+    setStatus("live", "Requesting microphone access…");
+    resetLivePanel();
 
     // Isolate the actual mic-permission step from everything after it, so a
     // failure elsewhere (audio pipeline setup, worklet loading, websocket)
@@ -544,7 +577,7 @@ if (window.AndroidAudio) {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
       liveToggle.disabled = false;
-      liveHint.textContent = "Microphone access failed (" + err.name + "): " + err.message;
+      setStatus("live", "Microphone access failed (" + err.name + "): " + err.message, true);
       return;
     }
 
@@ -579,14 +612,14 @@ if (window.AndroidAudio) {
       ws.onmessage = (event) => {
         const result = JSON.parse(event.data);
         if (result.error) {
-          showError(liveResults, result.error);
+          setStatus("live", result.error, true);
           return;
         }
         renderResult(liveResults, result, livePanelState);
       };
 
       ws.onerror = () => {
-        showError(liveResults, "Connection error.");
+        setStatus("live", "Connection error.", true);
       };
 
       ws.onclose = () => {
@@ -594,7 +627,7 @@ if (window.AndroidAudio) {
       };
     } catch (err) {
       liveToggle.disabled = false;
-      liveHint.textContent = "Could not start audio processing (" + err.name + "): " + err.message;
+      setStatus("live", "Could not start audio processing (" + err.name + "): " + err.message, true);
       stream.getTracks().forEach((t) => t.stop());
     }
   }

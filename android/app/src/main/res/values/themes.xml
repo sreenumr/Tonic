@@ -1,3 +1,11 @@
 <resources>
-    <style name="Theme.Tonic" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Dark "stage" theme to match the web UI: dark window background (no
+         white flash before the WebView paints) and matching system bars. -->
+    <style name="Theme.Tonic" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/tonic_bg</item>
+        <item name="android:colorBackground">@color/tonic_bg</item>
+        <item name="android:statusBarColor">@color/tonic_bg</item>
+        <item name="android:navigationBarColor">@color/tonic_bg</item>
+        <item name="android:colorAccent">@color/tonic_accent</item>
+    </style>
 </resources>

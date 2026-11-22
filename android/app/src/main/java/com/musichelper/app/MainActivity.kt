@@ -89,6 +89,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         webView = WebView(this)
+        // Match the dark UI so there's no white flash before the page paints.
+        webView.setBackgroundColor(0xFF0B0D12.toInt())
         setContentView(webView)
         configureWebView()
 
