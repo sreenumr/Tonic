@@ -647,11 +647,11 @@ svg.fifths {
 
 .dock {
   flex: none;
-  padding: 6px 0 calc(12px + env(safe-area-inset-bottom, 0px));
+  padding: 4px 0 calc(8px + env(safe-area-inset-bottom, 0px));
 }
 
 .status {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   min-height: 1.35em;
   font-size: 12px;
   color: var(--text-3);
@@ -674,13 +674,13 @@ svg.fifths {
 .dock-toggle {
   justify-self: center;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 4px;
-  min-width: 72px;
-  padding: 8px 10px;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 12px;
   border: none;
-  border-radius: 14px;
+  border-radius: 999px;
   background: none;
   color: var(--text-3);
   font-size: 11.5px;
@@ -690,8 +690,8 @@ svg.fifths {
 }
 
 .dock-toggle svg {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
 }
 
 .dock-toggle[aria-pressed="true"] {
@@ -700,8 +700,8 @@ svg.fifths {
 }
 
 .main-btn {
-  width: 72px;
-  height: 72px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   border: none;
   display: grid;
@@ -730,8 +730,8 @@ svg.fifths {
 }
 
 .main-btn .ico {
-  width: 30px;
-  height: 30px;
+  width: 25px;
+  height: 25px;
   grid-area: 1 / 1;
   display: none;
 }
@@ -768,8 +768,8 @@ svg.fifths {
   .chord-now-value { font-size: 32px; }
   .key-value { font-size: 20px; }
   .note-bar { height: 22px; }
-  .main-btn { width: 62px; height: 62px; }
-  .dock-toggle { padding: 6px 8px; }
+  .main-btn { width: 50px; height: 50px; }
+  .dock-toggle { padding: 6px 10px; }
   .results { gap: 8px; }
 }
 
