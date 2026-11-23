@@ -25,6 +25,7 @@
           <span class="live-dot" id="live-status-dot" aria-hidden="true"></span>Live
         </button>
         <button type="button" class="tab" role="tab" aria-selected="false" data-view="file" id="tab-file">File</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" data-view="sets" id="tab-sets">Sets</button>
       </nav>
     </header>
 
@@ -35,6 +36,39 @@
       <section class="view" id="view-file" role="tabpanel" aria-labelledby="tab-file" hidden>
         <div class="results" id="file-results"></div>
         <input type="file" id="file-input" accept=".wav,.mp3,audio/wav,audio/mpeg" hidden />
+      </section>
+      <section class="view" id="view-sets" role="tabpanel" aria-labelledby="tab-sets" hidden>
+        <div class="sets">
+          <div class="sets-head">
+            <button type="button" class="set-picker program-btn" id="program-picker" aria-haspopup="listbox" aria-expanded="false" aria-controls="program-menu"></button>
+            <input class="set-picker-input" id="program-name-input" type="text" maxlength="60" aria-label="Program name" hidden />
+            <button type="button" class="pill-btn" id="program-edit" aria-pressed="false">Edit</button>
+            <button type="button" class="pill-btn" id="program-new">+ Program</button>
+          </div>
+          <div class="program-menu" id="program-menu" hidden>
+            <div class="program-menu-tools">
+              <input class="program-search" id="program-search" type="search" placeholder="Search programs" aria-label="Search programs" autocomplete="off" />
+              <button type="button" class="pill-btn small" id="program-sort" aria-label="Sort programs"></button>
+            </div>
+            <ul class="program-list" id="program-list" role="listbox" aria-label="Programs"></ul>
+          </div>
+
+          <div class="sets-sub">
+            <span class="label sets-count" id="program-count"></span>
+            <button type="button" class="pill-btn small" id="set-add-top">+ Set</button>
+            <nav class="set-jumps" id="set-jumps" aria-label="Jump to set"></nav>
+            <button type="button" class="pill-btn danger" id="program-delete" hidden>Delete program</button>
+            <button type="button" class="pill-btn small level-cycle" id="set-level" aria-label="Chords shown per song (tap to change)"></button>
+          </div>
+
+          <div class="set-sections" id="set-sections"></div>
+
+          <form class="song-add" id="song-add">
+            <input class="song-add-title" id="song-add-title" type="text" maxlength="80" placeholder="Song title" aria-label="Song title" autocomplete="off" />
+            <select class="key-select" id="song-add-key" aria-label="Key"></select>
+            <button type="submit" class="pill-btn primary">Add</button>
+          </form>
+        </div>
       </section>
     </main>
 
@@ -55,6 +89,12 @@
           </svg>
           <svg class="ico ico-stop" viewBox="0 0 24 24" aria-hidden="true">
             <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" fill="currentColor" />
+          </svg>
+          <svg class="ico ico-plus" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+          </svg>
+          <svg class="ico ico-check" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
           <svg class="ico ico-upload" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M12 15V5m0 0 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />

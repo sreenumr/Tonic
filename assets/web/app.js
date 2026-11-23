@@ -215,6 +215,7 @@ function setPref(name, on) {
   }
   syncPrefButtons();
   for (const p of panels) renderResult(p.container, p.state.lastResult || {}, p.state);
+  if (name === "chords") renderSets();
 }
 
 function syncPrefButtons() {
@@ -409,6 +410,7 @@ let activeView = "live";
 const statusText = {
   live: { text: "Tap the mic and play some chords", error: false },
   file: { text: "Analyze a WAV or MP3 from your device", error: false },
+  sets: { text: "Change a song's key and its chords follow", error: false },
 };
 
 function setStatus(view, text, isError) {
@@ -421,9 +423,18 @@ function setStatus(view, text, isError) {
 
 function syncMainButton() {
   const fileMode = activeView === "file";
+  const setsMode = activeView === "sets";
   liveToggle.classList.toggle("upload", fileMode);
-  liveToggle.classList.toggle("stop", !fileMode && !!liveSession);
-  liveToggle.setAttribute("aria-label", fileMode ? "Choose an audio file" : liveSession ? "Stop listening" : "Start listening");
+  const saveMode = setsMode && setsSaveMode();
+  liveToggle.classList.toggle("add", setsMode && !saveMode);
+  liveToggle.classList.toggle("save", saveMode);
+  liveToggle.classList.toggle("stop", activeView === "live" && !!liveSession);
+  liveToggle.setAttribute(
+    "aria-label",
+    fileMode ? "Choose an audio file" : saveMode ? "Done" : setsMode ? "Add a song" : liveSession ? "Stop listening" : "Start listening"
+  );
+  // Notes (live detected pitches) mean nothing for a set list.
+  PREFS.notes.button.style.visibility = setsMode ? "hidden" : "";
 }
 
 function switchView(view) {
@@ -435,13 +446,16 @@ function switchView(view) {
   });
   document.getElementById("view-live").hidden = view !== "live";
   document.getElementById("view-file").hidden = view !== "file";
+  document.getElementById("view-sets").hidden = view !== "sets";
+  if (view === "sets") syncActiveJump(); // positions are only real once visible
   setStatus(view, statusText[view].text, statusText[view].error);
   syncMainButton();
 }
 
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
 
-// In File view the main button picks a file; in Live view it starts/stops.
+// In File view the main button picks a file, in Sets view it adds a song;
+// in Live view it starts/stops.
 // (Capturing listener so it runs before the live start/stop handler below.)
 liveToggle.addEventListener(
   "click",
@@ -449,6 +463,9 @@ liveToggle.addEventListener(
     if (activeView === "file") {
       e.stopImmediatePropagation();
       fileInput.click();
+    } else if (activeView === "sets") {
+      e.stopImmediatePropagation();
+      toggleAddSong();
     }
   },
   true
@@ -647,3 +664,844 @@ if (window.AndroidAudio) {
     setLiveUIIdle();
   }
 }
+
+// ---------- Sets view (programs > sets > songs) ----------
+//
+// A program is one live show (e.g. "Baithak Nov 29"); it holds several
+// sets, each a list of songs with the key they'll be played in. The key can
+// be changed (picker or ±1 semitone) and the playable chords update right
+// away. Pure music theory, so it's computed here - no server round trip -
+// and it all lives in localStorage on this device (the Android app always
+// loads from the same 127.0.0.1:8080 origin, so it persists there too).
+
+const PROGRAMS_STORAGE = "tonic.programs";
+const LEGACY_SETS_STORAGE = "tonic.setlists"; // v1: flat set lists, migrated once
+const SETS_LEVEL_STORAGE = "tonic.setsLevel";
+const MAJOR_TONICS = ["C", "D♭", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
+const MINOR_TONICS = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "G♯", "A", "B♭", "B"];
+const LETTERS = ["C", "D", "E", "F", "G", "A", "B"];
+const LETTER_PCS = [0, 2, 4, 5, 7, 9, 11];
+const SCALES = {
+  major: { steps: [0, 2, 4, 5, 7, 9, 11], qual: ["major", "minor", "minor", "major", "major", "minor", "diminished"], roman: ["I", "ii", "iii", "IV", "V", "vi", "vii°"] },
+  minor: { steps: [0, 2, 3, 5, 7, 8, 10], qual: ["minor", "diminished", "major", "minor", "minor", "major", "major"], roman: ["i", "ii°", "III", "iv", "v", "VI", "VII"] },
+};
+// Same tiers as the server (internal/theory levelDegrees).
+const LEVEL_LABELS = { easy: "Easy", medium: "Med", hard: "Hard", full: "All" };
+const LEVEL_DEGREES = { easy: [1, 4, 5], medium: [1, 4, 5, 6], hard: [1, 2, 4, 5, 6], full: [1, 2, 3, 4, 5, 6, 7] };
+// Spelled-correctly-but-unfriendly names a player would just call by their
+// everyday name (e.g. the VI of E♭ minor is C♭ on paper, B on the fretboard).
+const FRIENDLY = { "C♭": "B", "F♭": "E", "E♯": "F", "B♯": "C" };
+
+function keyName(key) {
+  return (key.minor ? MINOR_TONICS : MAJOR_TONICS)[mod12(key.pc)] + (key.minor ? " minor" : " major");
+}
+
+/** The 7 diatonic triads of a key, spelled from the key's own letters. */
+function keyChords(key) {
+  const scale = SCALES[key.minor ? "minor" : "major"];
+  const tonic = (key.minor ? MINOR_TONICS : MAJOR_TONICS)[mod12(key.pc)];
+  const li = LETTERS.indexOf(tonic[0]);
+  return scale.steps.map((step, d) => {
+    const letterIdx = (li + d) % 7;
+    const diff = mod12(key.pc + step - LETTER_PCS[letterIdx]);
+    let root = LETTERS[letterIdx] + (diff === 1 ? "♯" : diff === 11 ? "♭" : "");
+    root = FRIENDLY[root] || root;
+    const q = scale.qual[d];
+    return { degree: d + 1, roman: scale.roman[d], quality: q, label: root + (q === "minor" ? "m" : q === "diminished" ? "°" : "") };
+  });
+}
+
+function newId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function newSet(n) {
+  return { id: newId(), name: "Set " + n, songs: [] };
+}
+
+function newProgram(name) {
+  return { id: newId(), name, createdAt: Date.now(), sets: [newSet(1)] };
+}
+
+/**
+ * Programs saved before dates were tracked: newId() starts with a base-36
+ * timestamp, so the creation time can be read back out of the id.
+ */
+function backfillCreatedAt(data) {
+  let changed = false;
+  for (const p of data.programs) {
+    if (typeof p.createdAt === "number") continue;
+    const t = parseInt(String(p.id).slice(0, -5), 36);
+    const plausible = t > Date.UTC(2024, 0, 1) && t < Date.now() + 864e5;
+    p.createdAt = plausible ? t : Date.now();
+    changed = true;
+  }
+  return changed;
+}
+
+function loadPrograms() {
+  try {
+    const data = JSON.parse(localStorage.getItem(PROGRAMS_STORAGE));
+    if (data && Array.isArray(data.programs) && data.programs.length) return data;
+  } catch (e) {
+    /* missing or unreadable - fall through */
+  }
+  // v1 data: each old set list was really named for a show, so it becomes a
+  // program of that name with its songs in "Set 1".
+  try {
+    const old = JSON.parse(localStorage.getItem(LEGACY_SETS_STORAGE));
+    if (old && Array.isArray(old.sets) && old.sets.length) {
+      const programs = old.sets.map((s) => ({
+        id: s.id,
+        name: s.name || "Untitled program",
+        sets: [{ id: newId(), name: "Set 1", songs: Array.isArray(s.songs) ? s.songs : [] }],
+      }));
+      return { activeId: old.activeId, programs };
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  const p = newProgram("My program");
+  return { activeId: p.id, programs: [p] };
+}
+
+const progData = loadPrograms();
+if (backfillCreatedAt(progData)) {
+  try {
+    localStorage.setItem(PROGRAMS_STORAGE, JSON.stringify(progData));
+  } catch (e) {
+    /* ignore */
+  }
+}
+const setsUI = {
+  editing: false,
+  armed: null, // id of the program/set waiting for a second "delete" tap
+  addingTo: null, // id of the set whose add-song form is open
+  level: (() => {
+    try {
+      return localStorage.getItem(SETS_LEVEL_STORAGE) || "full";
+    } catch (e) {
+      return "full";
+    }
+  })(),
+  lastKey: { pc: 7, minor: false },
+};
+const setEls = {
+  picker: document.getElementById("program-picker"),
+  nameInput: document.getElementById("program-name-input"),
+  editBtn: document.getElementById("program-edit"),
+  newBtn: document.getElementById("program-new"),
+  deleteBtn: document.getElementById("program-delete"),
+  count: document.getElementById("program-count"),
+  levelBtn: document.getElementById("set-level"),
+  addForm: document.getElementById("song-add"),
+  addTitle: document.getElementById("song-add-title"),
+  addKey: document.getElementById("song-add-key"),
+  sections: document.getElementById("set-sections"),
+};
+
+const setJumps = document.getElementById("set-jumps");
+
+function saveSets() {
+  try {
+    localStorage.setItem(PROGRAMS_STORAGE, JSON.stringify(progData));
+  } catch (e) {
+    setStatus("sets", "Couldn't save on this device", true);
+  }
+}
+
+/**
+ * A set can't be empty: drop empty sets (except the one being filled right
+ * now, and a program's only set) and keep default "Set N" names in order.
+ */
+function normalizeProgram(prog) {
+  let changed = false;
+  const kept = prog.sets.filter((s) => s.songs.length || s.id === setsUI.addingTo);
+  if (!kept.length) kept.push(prog.sets[0] || newSet(1));
+  if (kept.length !== prog.sets.length) changed = true;
+  prog.sets = kept;
+  prog.sets.forEach((s, i) => {
+    if (/^Set \d+$/.test(s.name) && s.name !== "Set " + (i + 1)) {
+      s.name = "Set " + (i + 1);
+      changed = true;
+    }
+  });
+  if (changed) saveSets();
+}
+
+function activeProgram() {
+  return progData.programs.find((p) => p.id === progData.activeId) || progData.programs[0];
+}
+
+function fillKeySelect(select, key) {
+  if (!select.options.length) {
+    for (const minor of [false, true]) {
+      const group = document.createElement("optgroup");
+      group.label = minor ? "Minor" : "Major";
+      for (let pc = 0; pc < 12; pc++) {
+        const opt = document.createElement("option");
+        opt.value = pc + ":" + (minor ? 1 : 0);
+        opt.textContent = keyName({ pc, minor }).replace(" major", "").replace(" minor", "m");
+        group.appendChild(opt);
+      }
+      select.appendChild(group);
+    }
+  }
+  select.value = key.pc + ":" + (key.minor ? 1 : 0);
+}
+
+function readKeySelect(select) {
+  const [pc, m] = select.value.split(":");
+  return { pc: Number(pc), minor: m === "1" };
+}
+
+function iconButton(cls, label, text, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "icon-btn" + (cls ? " " + cls : "");
+  b.setAttribute("aria-label", label);
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function plural(n, word) {
+  return n + " " + word + (n === 1 ? "" : "s");
+}
+
+function renderSets() {
+  const prog = activeProgram();
+  progData.activeId = prog.id;
+  if (setsUI.editing || !prog.sets.some((s) => s.id === setsUI.addingTo)) setsUI.addingTo = null;
+  normalizeProgram(prog);
+  const songTotal = prog.sets.reduce((n, s) => n + s.songs.length, 0);
+
+  // Header: program picker, or the name field while editing.
+  setEls.picker.textContent = prog.name || "Untitled program";
+  setEls.picker.hidden = setsUI.editing;
+  if (setsUI.editing) closeProgramMenu();
+  setEls.nameInput.hidden = !setsUI.editing;
+  if (setsUI.editing && document.activeElement !== setEls.nameInput) setEls.nameInput.value = prog.name;
+  setEls.editBtn.textContent = setsUI.editing ? "Done" : "Edit";
+  setEls.editBtn.setAttribute("aria-pressed", setsUI.editing ? "true" : "false");
+  setEls.newBtn.hidden = setsUI.editing;
+  setEls.deleteBtn.hidden = !setsUI.editing;
+  const progArmed = setsUI.armed === prog.id;
+  setEls.deleteBtn.textContent = progArmed ? "Tap again to delete" : "Delete program";
+  setEls.deleteBtn.classList.toggle("armed", progArmed);
+  setEls.count.textContent = plural(prog.sets.length, "set") + " · " + plural(songTotal, "song");
+  setEls.levelBtn.textContent = LEVEL_LABELS[setsUI.level] || LEVEL_LABELS.full;
+  setEls.levelBtn.hidden = !PREFS.chords.on || setsUI.editing;
+  setJumps.hidden = setsUI.editing;
+  document.getElementById("set-add-top").hidden = setsUI.editing;
+
+  const scrollTop = setEls.sections.scrollTop;
+  setEls.addForm.remove();
+  setEls.sections.innerHTML = "";
+  prog.sets.forEach((set, si) => setEls.sections.appendChild(setSection(prog, set, si)));
+
+  const addSet = document.createElement("button");
+  addSet.type = "button";
+  addSet.className = "add-set-btn";
+  addSet.textContent = "+ Add set";
+  addSet.addEventListener("click", addNewSet);
+  setEls.sections.appendChild(addSet);
+  setEls.sections.scrollTop = scrollTop;
+  renderSetJumps(prog);
+  syncMainButton();
+}
+
+function setSection(prog, set, si) {
+  const sec = document.createElement("section");
+  sec.className = "set-block";
+  sec.dataset.setId = set.id;
+
+  const head = document.createElement("div");
+  head.className = "set-block-head";
+  if (setsUI.editing) {
+    const name = document.createElement("input");
+    name.className = "set-name-input";
+    name.type = "text";
+    name.maxLength = 40;
+    name.value = set.name;
+    name.setAttribute("aria-label", "Set name");
+    name.addEventListener("input", () => {
+      set.name = name.value.trim() || "Set " + (si + 1);
+      saveSets();
+    });
+    head.appendChild(name);
+    const armed = setsUI.armed === set.id;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "pill-btn danger" + (armed ? " armed" : "");
+    del.textContent = armed ? "Tap again" : "Delete set";
+    del.addEventListener("click", () => {
+      if (!armed && set.songs.length) {
+        setsUI.armed = set.id;
+        renderSets();
+        return;
+      }
+      prog.sets.splice(si, 1);
+      if (!prog.sets.length) prog.sets.push(newSet(1));
+      setsUI.armed = null;
+      saveSets();
+      renderSets();
+    });
+    head.appendChild(del);
+  } else {
+    const name = document.createElement("span");
+    name.className = "set-block-name";
+    name.textContent = set.name;
+    const count = document.createElement("span");
+    count.className = "set-block-count";
+    count.textContent = plural(set.songs.length, "song");
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "pill-btn";
+    add.textContent = setsUI.addingTo === set.id ? "Close" : "+ Song";
+    add.addEventListener("click", () => openAddSong(setsUI.addingTo === set.id ? null : set.id));
+    head.append(name, count, add);
+  }
+  sec.appendChild(head);
+
+  const list = document.createElement("ol");
+  list.className = "song-list";
+  set.songs.forEach((song, i) => list.appendChild(songRow(prog, si, song, i)));
+  if (!set.songs.length && setsUI.addingTo !== set.id) {
+    const li = document.createElement("li");
+    li.className = "song-empty";
+    li.textContent = setsUI.editing ? "No songs in this set" : "No songs yet — tap + Song";
+    list.appendChild(li);
+  }
+  sec.appendChild(list);
+
+  if (setsUI.addingTo === set.id) {
+    fillKeySelect(setEls.addKey, setsUI.lastKey);
+    sec.appendChild(setEls.addForm);
+  }
+  return sec;
+}
+
+/** Moves a song one step up/down, crossing into the neighbouring set at the ends. */
+function moveSong(prog, si, i, delta) {
+  const songs = prog.sets[si].songs;
+  const j = i + delta;
+  if (j >= 0 && j < songs.length) {
+    [songs[i], songs[j]] = [songs[j], songs[i]];
+  } else {
+    const target = prog.sets[si + delta];
+    if (!target) return;
+    const [song] = songs.splice(i, 1);
+    if (delta < 0) target.songs.push(song);
+    else target.songs.unshift(song);
+  }
+  saveSets();
+  renderSets();
+}
+
+function songRow(prog, si, song, i) {
+  const set = prog.sets[si];
+  const li = document.createElement("li");
+  li.className = "song";
+  if (!song.id) song.id = newId();
+  li.dataset.songId = song.id;
+
+  const top = document.createElement("div");
+  top.className = "song-top";
+  const grip = document.createElement("span");
+  grip.className = "drag-handle";
+  grip.title = "Drag to reorder";
+  grip.setAttribute("aria-hidden", "true");
+  grip.addEventListener("pointerdown", (e) => startSongDrag(e, li));
+  const num = document.createElement("span");
+  num.className = "song-num";
+  num.textContent = i + 1;
+  top.append(grip, num);
+
+  if (setsUI.editing) {
+    const title = document.createElement("input");
+    title.className = "song-title-input";
+    title.type = "text";
+    title.maxLength = 80;
+    title.value = song.title;
+    title.setAttribute("aria-label", "Song title");
+    title.addEventListener("change", () => {
+      song.title = title.value.trim() || song.title;
+      saveSets();
+    });
+    top.appendChild(title);
+    const up = iconButton("", "Move up", "↑", () => moveSong(prog, si, i, -1));
+    up.disabled = si === 0 && i === 0;
+    const down = iconButton("", "Move down", "↓", () => moveSong(prog, si, i, 1));
+    down.disabled = si === prog.sets.length - 1 && i === set.songs.length - 1;
+    const del = iconButton("danger", "Remove song", "✕", () => {
+      set.songs.splice(i, 1);
+      saveSets();
+      renderSets();
+    });
+    top.append(up, down, del);
+    li.appendChild(top);
+    return li;
+  }
+
+  const title = document.createElement("span");
+  title.className = "song-title";
+  title.textContent = song.title;
+  top.appendChild(title);
+
+  const chordRow = document.createElement("ol");
+  chordRow.className = "chord-row compact";
+  chordRow.hidden = !PREFS.chords.on;
+
+  const keyBox = document.createElement("div");
+  keyBox.className = "song-key";
+  const select = document.createElement("select");
+  select.className = "key-select";
+  select.setAttribute("aria-label", "Key for " + song.title);
+  fillKeySelect(select, song.key);
+  const setKey = (key) => {
+    song.key = key;
+    setsUI.lastKey = key;
+    saveSets();
+    select.value = key.pc + ":" + (key.minor ? 1 : 0);
+    renderSongChords(chordRow, song.key);
+  };
+  select.addEventListener("change", () => setKey(readKeySelect(select)));
+  const down = iconButton("", "Key down a semitone", "−", () => setKey({ pc: mod12(song.key.pc - 1), minor: song.key.minor }));
+  const up = iconButton("", "Key up a semitone", "+", () => setKey({ pc: mod12(song.key.pc + 1), minor: song.key.minor }));
+  keyBox.append(down, select, up);
+  top.appendChild(keyBox);
+  li.appendChild(top);
+
+  renderSongChords(chordRow, song.key);
+  li.appendChild(chordRow);
+  return li;
+}
+
+function renderSongChords(row, key) {
+  row.innerHTML = "";
+  const all = keyChords(key);
+  for (const d of LEVEL_DEGREES[setsUI.level] || LEVEL_DEGREES.full) {
+    const chord = all[d - 1];
+    const li = document.createElement("li");
+    li.className = "chord-chip quality-" + chord.quality;
+    const roman = document.createElement("span");
+    roman.className = "roman";
+    roman.textContent = chord.roman;
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = chord.label;
+    li.append(roman, name);
+    row.appendChild(li);
+  }
+}
+
+// ---------- Set shortcuts (jump buttons next to "+ Set") ----------
+
+
+function renderSetJumps(prog) {
+  setJumps.innerHTML = "";
+  prog.sets.forEach((set) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "jump-chip";
+    b.dataset.setId = set.id;
+    b.textContent = set.name;
+    b.addEventListener("click", () => scrollToSet(set.id));
+    setJumps.appendChild(b);
+  });
+  syncActiveJump();
+}
+
+function scrollToSet(setId) {
+  const block = setEls.sections.querySelector('.set-block[data-set-id="' + setId + '"]');
+  if (!block) return;
+  const top = block.getBoundingClientRect().top - setEls.sections.getBoundingClientRect().top + setEls.sections.scrollTop;
+  setEls.sections.scrollTo({ top: Math.max(0, top - 2), behavior: "smooth" });
+}
+
+/** Highlights the shortcut of the set at the top of the list (scroll spy). */
+function syncActiveJump() {
+  if (!setEls.sections.clientHeight) return; // Sets view hidden: nothing laid out
+  const top = setEls.sections.getBoundingClientRect().top + 48;
+  let current = null;
+  for (const block of setEls.sections.querySelectorAll(".set-block")) {
+    if (!current || block.getBoundingClientRect().top <= top) current = block;
+  }
+  // Scrolled to the very bottom: the last set is the one being looked at.
+  const s = setEls.sections;
+  if (s.scrollTop > 0 && s.scrollTop + s.clientHeight >= s.scrollHeight - 2) {
+    const blocks = s.querySelectorAll(".set-block");
+    current = blocks[blocks.length - 1] || current;
+  }
+  const id = current && current.dataset.setId;
+  for (const chip of setJumps.children) {
+    const on = chip.dataset.setId === id;
+    if (on && !chip.classList.contains("active")) {
+      // Keep the active shortcut visible in the strip (no page scroll).
+      const cr = chip.getBoundingClientRect();
+      const sr = setJumps.getBoundingClientRect();
+      if (cr.left < sr.left || cr.right > sr.right) {
+        setJumps.scrollBy({ left: cr.left - sr.left - (sr.width - cr.width) / 2, behavior: "smooth" });
+      }
+    }
+    chip.classList.toggle("active", on);
+  }
+}
+
+let jumpSpyQueued = false;
+setEls.sections.addEventListener("scroll", () => {
+  if (jumpSpyQueued) return;
+  jumpSpyQueued = true;
+  requestAnimationFrame(() => {
+    jumpSpyQueued = false;
+    syncActiveJump();
+  });
+});
+
+/** Appends a new set to the program and opens its add-song form. */
+function addNewSet() {
+  const prog = activeProgram();
+  const set = newSet(prog.sets.length + 1);
+  prog.sets.push(set);
+  saveSets();
+  setsUI.editing = false;
+  setsUI.armed = null;
+  setsUI.addingTo = set.id;
+  renderSets();
+  setEls.addForm.scrollIntoView({ block: "nearest" });
+  setEls.addTitle.focus();
+}
+
+document.getElementById("set-add-top").addEventListener("click", addNewSet);
+
+/** Opens the add-song form under a set (null closes it). */
+function openAddSong(setId) {
+  setsUI.editing = false;
+  setsUI.armed = null;
+  setsUI.addingTo = setId;
+  renderSets();
+  if (setId) {
+    setEls.addForm.scrollIntoView({ block: "nearest" });
+    setEls.addTitle.focus();
+  }
+}
+
+// ---------- Program menu (search + sort) ----------
+
+const PROGRAM_SORT_STORAGE = "tonic.programSort";
+const PROGRAM_SORTS = {
+  newest: { label: "Newest", cmp: (a, b) => b.createdAt - a.createdAt },
+  oldest: { label: "Oldest", cmp: (a, b) => a.createdAt - b.createdAt },
+  name: { label: "A–Z", cmp: (a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base", numeric: true }) },
+};
+const menuEls = {
+  menu: document.getElementById("program-menu"),
+  search: document.getElementById("program-search"),
+  sort: document.getElementById("program-sort"),
+  list: document.getElementById("program-list"),
+};
+let programSort = "newest";
+try {
+  const v = localStorage.getItem(PROGRAM_SORT_STORAGE);
+  if (v && PROGRAM_SORTS[v]) programSort = v;
+} catch (e) {
+  /* ignore */
+}
+
+function formatDate(ms) {
+  return new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+function renderProgramMenu() {
+  menuEls.sort.textContent = "Sort: " + PROGRAM_SORTS[programSort].label;
+  const q = menuEls.search.value.trim().toLowerCase();
+  const items = progData.programs
+    .filter((p) => !q || (p.name || "").toLowerCase().includes(q))
+    .sort(PROGRAM_SORTS[programSort].cmp);
+  menuEls.list.innerHTML = "";
+  if (!items.length) {
+    const li = document.createElement("li");
+    li.className = "program-empty";
+    li.textContent = "No programs match “" + menuEls.search.value.trim() + "”";
+    menuEls.list.appendChild(li);
+    return;
+  }
+  for (const p of items) {
+    const li = document.createElement("li");
+    li.className = "program-item" + (p.id === progData.activeId ? " current" : "");
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", p.id === progData.activeId ? "true" : "false");
+    li.tabIndex = 0;
+    const name = document.createElement("span");
+    name.className = "program-item-name";
+    name.textContent = p.name || "Untitled program";
+    const songs = p.sets.reduce((n, s) => n + s.songs.length, 0);
+    const meta = document.createElement("span");
+    meta.className = "program-item-meta";
+    meta.textContent = formatDate(p.createdAt) + " · " + plural(p.sets.length, "set") + " · " + plural(songs, "song");
+    li.append(name, meta);
+    const choose = () => {
+      progData.activeId = p.id;
+      setsUI.addingTo = null;
+      saveSets();
+      closeProgramMenu();
+      setEls.sections.scrollTop = 0;
+      renderSets();
+    };
+    li.addEventListener("click", choose);
+    li.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        choose();
+      }
+    });
+    menuEls.list.appendChild(li);
+  }
+}
+
+function openProgramMenu() {
+  menuEls.search.value = "";
+  renderProgramMenu();
+  menuEls.menu.hidden = false;
+  setEls.picker.setAttribute("aria-expanded", "true");
+  // Only jump to the search box when there's enough to search through - on
+  // a phone, focusing it pops the keyboard over the list.
+  if (progData.programs.length > 6) menuEls.search.focus();
+}
+
+function closeProgramMenu() {
+  if (menuEls.menu.hidden) return;
+  menuEls.menu.hidden = true;
+  setEls.picker.setAttribute("aria-expanded", "false");
+}
+
+setEls.picker.addEventListener("click", () => {
+  if (menuEls.menu.hidden) openProgramMenu();
+  else closeProgramMenu();
+});
+menuEls.search.addEventListener("input", renderProgramMenu);
+menuEls.search.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    const first = menuEls.list.querySelector(".program-item");
+    if (first) first.click();
+  }
+});
+menuEls.sort.addEventListener("click", () => {
+  const order = Object.keys(PROGRAM_SORTS);
+  programSort = order[(order.indexOf(programSort) + 1) % order.length];
+  try {
+    localStorage.setItem(PROGRAM_SORT_STORAGE, programSort);
+  } catch (e) {
+    /* ignore */
+  }
+  renderProgramMenu();
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!menuEls.menu.hidden && !menuEls.menu.contains(e.target) && !setEls.picker.contains(e.target)) closeProgramMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeProgramMenu();
+});
+
+setEls.newBtn.addEventListener("click", () => {
+  const p = newProgram("Program " + (progData.programs.length + 1));
+  progData.programs.push(p);
+  progData.activeId = p.id;
+  saveSets();
+  setsUI.editing = true; // straight into naming it
+  setEls.sections.scrollTop = 0;
+  renderSets();
+  setEls.nameInput.focus();
+  setEls.nameInput.select();
+});
+
+setEls.editBtn.addEventListener("click", () => {
+  setsUI.editing = !setsUI.editing;
+  setsUI.armed = null;
+  renderSets();
+});
+
+setEls.nameInput.addEventListener("input", () => {
+  activeProgram().name = setEls.nameInput.value.trim() || "Untitled program";
+  saveSets();
+});
+setEls.nameInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") setEls.nameInput.blur();
+});
+
+setEls.deleteBtn.addEventListener("click", () => {
+  const prog = activeProgram();
+  if (setsUI.armed !== prog.id) {
+    setsUI.armed = prog.id;
+    renderSets();
+    return;
+  }
+  progData.programs = progData.programs.filter((p) => p.id !== prog.id);
+  if (!progData.programs.length) progData.programs.push(newProgram("My program"));
+  progData.activeId = progData.programs[0].id;
+  setsUI.armed = null;
+  setsUI.editing = false;
+  saveSets();
+  renderSets();
+});
+
+// One compact button instead of four tabs (keeps the row free for the set
+// shortcuts): each tap steps Easy -> Med -> Hard -> All -> Easy.
+setEls.levelBtn.addEventListener("click", () => {
+  const order = Object.keys(LEVEL_LABELS);
+  setsUI.level = order[(order.indexOf(setsUI.level) + 1) % order.length];
+  try {
+    localStorage.setItem(SETS_LEVEL_STORAGE, setsUI.level);
+  } catch (e) {
+    /* ignore */
+  }
+  renderSets();
+});
+
+setEls.addForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const title = setEls.addTitle.value.trim();
+  if (!title) {
+    setEls.addTitle.focus();
+    return;
+  }
+  const set = activeProgram().sets.find((s) => s.id === setsUI.addingTo);
+  if (!set) return;
+  const key = readKeySelect(setEls.addKey);
+  setsUI.lastKey = key;
+  set.songs.push({ id: newId(), title, key });
+  saveSets();
+  setEls.addTitle.value = "";
+  renderSets(); // form stays open under the same set for the next song
+  setEls.addForm.scrollIntoView({ block: "nearest" });
+  setEls.addTitle.focus();
+});
+
+/** True while the dock's floating button acts as "Done" (adding or editing). */
+function setsSaveMode() {
+  return setsUI.editing || !!setsUI.addingTo;
+}
+
+/**
+ * Dock main button in Sets view: "+" opens the add form on the last set;
+ * while adding/editing it's "Done" - keeps any title typed so far, then
+ * closes the form / leaves edit mode.
+ */
+function toggleAddSong() {
+  if (setsUI.editing) {
+    setsUI.editing = false;
+    setsUI.armed = null;
+    renderSets();
+    return;
+  }
+  if (setsUI.addingTo) {
+    const title = setEls.addTitle.value.trim();
+    const set = activeProgram().sets.find((s) => s.id === setsUI.addingTo);
+    if (title && set) {
+      const key = readKeySelect(setEls.addKey);
+      setsUI.lastKey = key;
+      set.songs.push({ id: newId(), title, key });
+      saveSets();
+    }
+    setEls.addTitle.value = "";
+    setEls.addTitle.blur();
+    openAddSong(null);
+    return;
+  }
+  const sets = activeProgram().sets;
+  openAddSong(sets[sets.length - 1].id);
+}
+
+// ---------- Drag to reorder songs ----------
+//
+// Grab a song by its grip and drag: it follows the finger, the list reflows
+// live, and dropping it in another set moves it there. Pointer events on a
+// touch-action:none grip, so it works with touch (HTML5 drag-and-drop
+// doesn't on mobile) without fighting the list's own scrolling.
+
+let songDrag = null;
+
+function startSongDrag(e, li) {
+  if (songDrag || (e.pointerType === "mouse" && e.button !== 0)) return;
+  e.preventDefault();
+  const r = li.getBoundingClientRect();
+  songDrag = { li, pointerId: e.pointerId, grabY: e.clientY - r.top, y: e.clientY, raf: 0 };
+  li.classList.add("dragging");
+  setEls.sections.classList.add("drag-active");
+  window.addEventListener("pointermove", onSongDragMove, { passive: false });
+  window.addEventListener("pointerup", endSongDrag);
+  window.addEventListener("pointercancel", endSongDrag);
+  songDrag.raf = requestAnimationFrame(songDragFrame);
+}
+
+function onSongDragMove(e) {
+  if (!songDrag || e.pointerId !== songDrag.pointerId) return;
+  e.preventDefault();
+  songDrag.y = e.clientY;
+}
+
+function songDragFrame() {
+  if (!songDrag) return;
+  const { li, y } = songDrag;
+  const box = setEls.sections.getBoundingClientRect();
+
+  // Auto-scroll near the edges of the list.
+  const edge = 56;
+  if (y < box.top + edge) setEls.sections.scrollTop -= Math.ceil((box.top + edge - y) / 6);
+  else if (y > box.bottom - edge) setEls.sections.scrollTop += Math.ceil((y - (box.bottom - edge)) / 6);
+
+  // Which set is under the finger (the one above, if between sets)?
+  const blocks = Array.from(setEls.sections.querySelectorAll(".set-block"));
+  let block = blocks[0];
+  for (const b of blocks) {
+    if (b.getBoundingClientRect().top <= y) block = b;
+  }
+  const list = block.querySelector(".song-list");
+  const others = Array.from(list.querySelectorAll(".song")).filter((x) => x !== li);
+  const before = others.find((x) => {
+    const r = x.getBoundingClientRect();
+    return y < r.top + r.height / 2;
+  });
+  const empty = list.querySelector(".song-empty");
+  if (empty) empty.remove();
+  if (before) {
+    if (li.nextElementSibling !== before) list.insertBefore(li, before);
+  } else if (li.parentNode !== list || li.nextElementSibling) {
+    list.appendChild(li);
+  }
+
+  // Keep the card under the finger wherever it now sits in the flow.
+  li.style.transform = "";
+  const natural = li.getBoundingClientRect().top;
+  li.style.transform = "translateY(" + (y - songDrag.grabY - natural) + "px)";
+  songDrag.raf = requestAnimationFrame(songDragFrame);
+}
+
+function endSongDrag(e) {
+  if (!songDrag || (e && e.pointerId !== songDrag.pointerId)) return;
+  cancelAnimationFrame(songDrag.raf);
+  window.removeEventListener("pointermove", onSongDragMove);
+  window.removeEventListener("pointerup", endSongDrag);
+  window.removeEventListener("pointercancel", endSongDrag);
+  songDrag.li.classList.remove("dragging");
+  songDrag.li.style.transform = "";
+  setEls.sections.classList.remove("drag-active");
+  songDrag = null;
+
+  // Read the new order back from the DOM.
+  const prog = activeProgram();
+  const byId = new Map();
+  for (const set of prog.sets) for (const song of set.songs) byId.set(song.id, song);
+  for (const block of setEls.sections.querySelectorAll(".set-block")) {
+    const set = prog.sets.find((x) => x.id === block.dataset.setId);
+    if (!set) continue;
+    set.songs = Array.from(block.querySelectorAll(".song"))
+      .map((el) => byId.get(el.dataset.songId))
+      .filter(Boolean);
+  }
+  saveSets();
+  renderSets();
+}
+
+renderSets();
