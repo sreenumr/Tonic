@@ -2,6 +2,7 @@ package com.musichelper.app
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -56,6 +57,10 @@ class MainActivity : ComponentActivity() {
     private val maxGain = 12f
     private val noiseFloor = 50 // raw int16 magnitude; chunks quieter than this are left ungained
 
+    // Text shared into the app ("Share -> Tonic"), waiting for the page to
+    // collect it via AndroidAudio.takeSharedText().
+    @Volatile private var pendingShare: String? = null
+
     private val httpClient = OkHttpClient()
     private var webSocket: WebSocket? = null
     private var audioRecord: AudioRecord? = null
@@ -87,6 +92,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) captureShare(intent)
 
         webView = WebView(this)
         // Match the dark UI so there's no white flash before the page paints.
@@ -114,6 +120,21 @@ class MainActivity : ComponentActivity() {
                 requestMicPermissionThenLoad()
             }
         }.start()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (captureShare(intent)) {
+            webView.evaluateJavascript("window.__onShare && window.__onShare()", null)
+        }
+    }
+
+    private fun captureShare(intent: Intent?): Boolean {
+        if (intent?.action != Intent.ACTION_SEND) return false
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return false
+        if (text.isBlank()) return false
+        pendingShare = text
+        return true
     }
 
     override fun onDestroy() {
@@ -192,6 +213,27 @@ class MainActivity : ComponentActivity() {
 
         @JavascriptInterface
         fun isDebugBuild(): Boolean = BuildConfig.DEBUG
+
+        /** Shared text waiting to be picked up (once), or "" if none. */
+        @JavascriptInterface
+        fun takeSharedText(): String {
+            val text = pendingShare ?: return ""
+            pendingShare = null
+            return text
+        }
+
+        /** Opens a web page in the phone's browser (not inside the app). */
+        @JavascriptInterface
+        fun openUrl(url: String) {
+            if (!url.startsWith("https://")) return
+            runOnUiThread {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                } catch (e: Exception) {
+                    Log.e(TAG, "openUrl failed", e)
+                }
+            }
+        }
     }
 
     private fun startCapture() {

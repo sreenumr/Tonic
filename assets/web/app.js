@@ -1975,7 +1975,7 @@ function showSheetMode(editing) {
   }
 }
 
-function openSheet(song, set, index) {
+function openSheet(song, set, index, opts = {}) {
   sheetUI.song = song;
   sheetUI.set = set;
   sheetUI.index = index;
@@ -1984,10 +1984,19 @@ function openSheet(song, set, index) {
   renderSheetKey();
   sheetEls.root.hidden = false;
   sheetEls.body.scrollTop = 0;
-  showSheetMode(!(song.sheet && song.sheet.text && song.sheet.text.trim()));
+  showSheetMode(typeof opts.text === "string" || !(song.sheet && song.sheet.text && song.sheet.text.trim()));
+  if (typeof opts.text === "string") {
+    // Shared in: prefill, and let "written in" follow the shared chords.
+    sheetEls.text.value = opts.text;
+    sheetUI.writtenTouched = false;
+    fillKeySelect(sheetEls.written, guessKey(sheetChords(opts.text), song.key));
+    sheetEls.text.scrollTop = 0;
+    sheetEls.text.blur(); // just review + Save; don't pop the keyboard
+  }
   // So the phone's back button closes the sheet instead of leaving the app.
   try {
-    history.pushState({ sheet: true }, "");
+    if (opts.replace) history.replaceState({ sheet: true }, "");
+    else history.pushState({ sheet: true }, "");
   } catch (e) {
     /* ignore */
   }
@@ -2028,3 +2037,162 @@ sheetEls.editor.addEventListener("submit", (e) => {
   saveSets();
   showSheetMode(false);
 });
+
+// ---------- Find chords + Share -> Tonic ----------
+
+/** Opens a page in the phone's browser (Android) or a new tab (desktop). */
+function openExternal(url) {
+  if (window.AndroidAudio && typeof window.AndroidAudio.openUrl === "function") window.AndroidAudio.openUrl(url);
+  else window.open(url, "_blank", "noopener");
+}
+
+document.getElementById("sheet-find").addEventListener("click", () => {
+  if (!sheetUI.song) return;
+  openExternal("https://www.google.com/search?q=" + encodeURIComponent(sheetUI.song.title + " chords"));
+});
+
+const shareEls = {
+  root: document.getElementById("share-pick"),
+  back: document.getElementById("share-back"),
+  sub: document.getElementById("share-sub"),
+  preview: document.getElementById("share-preview"),
+  program: document.getElementById("share-program"),
+  list: document.getElementById("share-list"),
+  form: document.getElementById("share-new"),
+  title: document.getElementById("share-new-title"),
+};
+let sharedText = "";
+
+const URL_LINE = /^\s*https?:\/\/\S+\s*$/i;
+
+/**
+ * Browsers share a selection as `"the text"` plus a link to it on the next
+ * line - keep just the text.
+ */
+function cleanShared(raw) {
+  let lines = raw.replace(/\r\n?/g, "\n").split("\n");
+  while (lines.length && (URL_LINE.test(lines[lines.length - 1]) || !lines[lines.length - 1].trim())) lines.pop();
+  while (lines.length && !lines[0].trim()) lines.shift();
+  let text = lines.join("\n");
+  const q = /^\s*["“]([\s\S]*)["”]\s*$/.exec(text);
+  if (q) text = q[1];
+  return text;
+}
+
+function receiveShare(raw) {
+  if (!raw) return;
+  const text = cleanShared(raw);
+  switchView("sets");
+  if (!text.trim()) {
+    setStatus("sets", "That was just a link — select the chords and lyrics on the page, then share the selection", true);
+    return;
+  }
+  sharedText = text;
+  openSharePicker();
+}
+
+function renderSharePicker() {
+  const prog = activeProgram();
+  shareEls.program.innerHTML = "";
+  for (const p of [...progData.programs].sort((a, b) => b.createdAt - a.createdAt)) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name || "Untitled program";
+    shareEls.program.appendChild(opt);
+  }
+  shareEls.program.value = prog.id;
+
+  const chords = sheetChords(sharedText);
+  shareEls.sub.textContent = chords.length
+    ? plural(chords.length, "chord") + " · looks like " + keyName(guessKey(chords, setsUI.lastKey))
+    : "No chords found — you can still save it";
+
+  shareEls.list.innerHTML = "";
+  for (const set of prog.sets) {
+    if (!set.songs.length) continue;
+    const head = document.createElement("p");
+    head.className = "share-set";
+    head.textContent = set.name;
+    shareEls.list.appendChild(head);
+    set.songs.forEach((song, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "share-song";
+      const t = document.createElement("span");
+      t.className = "share-song-title";
+      t.textContent = i + 1 + ". " + song.title;
+      const meta = document.createElement("span");
+      meta.className = "share-song-meta";
+      const has = song.sheet && song.sheet.text && song.sheet.text.trim();
+      meta.textContent = keyName(song.key).replace(" major", "").replace(" minor", "m") + (has ? " · replaces its sheet" : "");
+      b.append(t, meta);
+      b.addEventListener("click", () => useSharedFor(song, set, i));
+      shareEls.list.appendChild(b);
+    });
+  }
+  if (!shareEls.list.children.length) {
+    const p = document.createElement("p");
+    p.className = "program-empty";
+    p.textContent = "No songs in this program yet — add one below";
+    shareEls.list.appendChild(p);
+  }
+}
+
+function openSharePicker() {
+  closeSheet(true);
+  shareEls.preview.textContent = sharedText.split("\n").slice(0, 6).join("\n");
+  shareEls.title.value = "";
+  renderSharePicker();
+  shareEls.root.hidden = false;
+  shareEls.list.scrollTop = 0;
+  try {
+    history.pushState({ share: true }, "");
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function closeSharePicker(fromHistory) {
+  if (shareEls.root.hidden) return;
+  shareEls.root.hidden = true;
+  if (!fromHistory && history.state && history.state.share) history.back();
+}
+
+/** Opens the song's sheet editor with the shared text in it (Save to keep). */
+function useSharedFor(song, set, index) {
+  shareEls.root.hidden = true;
+  const text = sharedText;
+  sharedText = "";
+  openSheet(song, set, index, { text, replace: true });
+}
+
+shareEls.program.addEventListener("change", () => {
+  progData.activeId = shareEls.program.value;
+  saveSets();
+  renderSharePicker();
+  renderSets();
+});
+shareEls.back.addEventListener("click", () => closeSharePicker(false));
+shareEls.form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const title = shareEls.title.value.trim();
+  if (!title) {
+    shareEls.title.focus();
+    return;
+  }
+  const prog = activeProgram();
+  const set = prog.sets[prog.sets.length - 1];
+  // A new song starts in the key its chords are written in.
+  const key = guessKey(sheetChords(sharedText), setsUI.lastKey);
+  const song = { id: newId(), title, key };
+  set.songs.push(song);
+  saveSets();
+  renderSets();
+  useSharedFor(song, set, set.songs.length - 1);
+});
+window.addEventListener("popstate", () => closeSharePicker(true));
+
+window.__onShare = () => {
+  if (window.AndroidAudio && typeof window.AndroidAudio.takeSharedText === "function") receiveShare(window.AndroidAudio.takeSharedText());
+};
+window.__onShare(); // shared while the app was closed
