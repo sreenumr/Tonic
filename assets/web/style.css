@@ -1503,7 +1503,7 @@ select:focus-visible {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 14px 2px 24px;
-  font-size: 17px;
+  font-size: 16px;
   line-height: 1.45;
   color: var(--text);
 }
@@ -1520,7 +1520,7 @@ select:focus-visible {
 }
 
 .sheet-blank {
-  height: 14px;
+  height: 0.8em;
 }
 
 .sheet-label {
@@ -1552,7 +1552,7 @@ select:focus-visible {
 .sc {
   position: relative;
   padding-right: 6px;
-  font-size: 14.5px;
+  font-size: max(0.875em, 12px); /* 14px at the normal 16px; shrinks with "Fit to screen" but never below 12px */
   font-weight: 800;
   line-height: 1.3;
   white-space: nowrap;
@@ -1576,15 +1576,136 @@ select:focus-visible {
 
 .sc sup {
   margin-left: 2px;
-  font-size: 10px;
+  font-size: 0.69em;
   font-weight: 800;
   color: var(--now);
+}
+
+.sc[role="button"] {
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.sc[role="button"]:active {
+  background: var(--surface-3);
+}
+
+/* Tap-a-chord panel (bottom of the sheet) */
+.chord-edit-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.chord-edit-backdrop[hidden] {
+  display: none;
+}
+
+.chord-edit {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  background: var(--surface-2);
+  border-top: 1px solid var(--line-strong);
+  border-radius: var(--radius) var(--radius) 0 0;
+  box-shadow: 0 -12px 30px -10px rgba(0, 0, 0, 0.8);
+}
+
+.chord-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chord-edit-title {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.chord-edit .chord-row.compact {
+  margin-top: 0;
+}
+
+.chord-edit .chord-row.compact > li.chip-wrap > .chord-chip {
+  opacity: 0.9;
+}
+
+.chord-edit-custom {
+  display: flex;
+  gap: 8px;
+}
+
+.chord-edit-custom .song-add-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.song-add-title.invalid {
+  border-color: var(--danger);
+}
+
+.chord-edit-remove {
+  align-self: center;
+}
+
+.sheet-page {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+#sheet-fit.on {
+  color: var(--accent-2);
+  background: var(--accent-soft);
+  border-color: rgba(76, 141, 246, 0.45);
+}
+
+.sheet-body {
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+/* Page-turn feedback: a short glow at the edge you're moving toward. */
+.sheet::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 70px;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.sheet.turn-next::after {
+  bottom: 60px;
+  background: linear-gradient(to top, rgba(76, 141, 246, 0.28), transparent);
+  animation: turn-glow 0.45s ease-out;
+}
+
+.sheet.turn-prev::after {
+  top: 64px;
+  background: linear-gradient(to bottom, rgba(76, 141, 246, 0.28), transparent);
+  animation: turn-glow 0.45s ease-out;
+}
+
+@keyframes turn-glow {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 .sheet-foot {
   flex: none;
   display: flex;
-  justify-content: center;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--line);
 }

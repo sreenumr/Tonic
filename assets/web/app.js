@@ -1763,35 +1763,45 @@ function parseSheet(text) {
         if (real.length && real[0].at > 0) segs.push({ chord: null, text: lyric.slice(0, real[0].at) });
         real.forEach((c, k) => {
           const end = k + 1 < real.length ? real[k + 1].at : lyric.length;
-          segs.push({ chord: c.chord, text: lyric.slice(c.at, end) });
+          segs.push({ chord: c.chord, text: lyric.slice(c.at, end), src: { line: i, at: c.at, len: c.token.length, inline: false } });
         });
         lines.push({ type: "lyric", segs });
         i++;
       } else {
-        lines.push({ type: "chords", segs: chords.map((c) => (c.chord ? { chord: c.chord, text: "" } : { chord: null, text: c.token })) });
+        lines.push({
+          type: "chords",
+          segs: chords.map((c) =>
+            c.chord ? { chord: c.chord, text: "", src: { line: i, at: c.at, len: c.token.length, inline: false } } : { chord: null, text: c.token },
+          ),
+        });
       }
       continue;
     }
     // Inline [G] chords (or plain lyrics).
     const segs = [];
     const parts = line.split(/\[([^\]]*)\]/);
-    let pending = null;
+    let pending = null; // { chord, src } of a [chord] waiting for its text
+    let col = 0; // column of `part` in the line (for editing a chord in place)
+    const push = (text) => {
+      segs.push(pending ? { chord: pending.chord, src: pending.src, text } : { chord: null, text });
+      pending = null;
+    };
     parts.forEach((part, k) => {
       if (k % 2 === 1) {
         const chord = parseChord(part.trim());
         if (chord) {
-          if (pending) segs.push({ chord: pending, text: "" });
-          pending = chord;
+          if (pending) push("");
+          pending = { chord, src: { line: i, at: col, len: part.length + 2, inline: true } };
         } else {
-          segs.push({ chord: pending, text: "[" + part + "]" });
-          pending = null;
+          push("[" + part + "]");
         }
-      } else if (part || pending) {
-        segs.push({ chord: pending, text: part });
-        pending = null;
+        col += part.length + 2;
+      } else {
+        if (part || pending) push(part);
+        col += part.length;
       }
     });
-    if (pending) segs.push({ chord: pending, text: "" });
+    if (pending) push("");
     const onlyChords = segs.every((s) => !s.text.trim());
     lines.push({ type: onlyChords ? "chords" : "lyric", segs });
   }
@@ -1923,7 +1933,12 @@ function renderSheetBody() {
         const m = /^(\S*)([\s\S]*)$/.exec(seg.text);
         const anchor = document.createElement("span");
         anchor.className = "sheet-seg";
-        anchor.appendChild(chordBadge(transposeChord(seg.chord, shift), key, plan));
+        const shown = transposeChord(seg.chord, shift);
+        const badge = chordBadge(shown, key, plan);
+        badge.setAttribute("role", "button");
+        badge.tabIndex = 0;
+        badge.addEventListener("click", () => openChordEdit(seg.src, shown));
+        anchor.appendChild(badge);
         const word = document.createElement("span");
         word.className = "sheet-word";
         word.textContent = m[1] || " ";
@@ -1934,6 +1949,7 @@ function renderSheetBody() {
     }
     sheetEls.body.appendChild(div);
   }
+  applySheetFit();
 }
 
 function renderSheetKey() {
@@ -1959,6 +1975,7 @@ function renderSheetKey() {
 }
 
 function showSheetMode(editing) {
+  closeChordEdit();
   sheetUI.editing = editing;
   sheetEls.editor.hidden = !editing;
   sheetEls.body.hidden = editing;
@@ -1969,7 +1986,6 @@ function showSheetMode(editing) {
     sheetEls.text.value = sheet ? sheet.text : "";
     sheetUI.writtenTouched = !!sheet;
     fillKeySelect(sheetEls.written, sheet ? sheet.key : sheetUI.song.key);
-    sheetEls.text.focus();
   } else {
     renderSheetBody();
   }
@@ -1991,7 +2007,6 @@ function openSheet(song, set, index, opts = {}) {
     sheetUI.writtenTouched = false;
     fillKeySelect(sheetEls.written, guessKey(sheetChords(opts.text), song.key));
     sheetEls.text.scrollTop = 0;
-    sheetEls.text.blur(); // just review + Save; don't pop the keyboard
   }
   // So the phone's back button closes the sheet instead of leaving the app.
   try {
@@ -2004,6 +2019,7 @@ function openSheet(song, set, index, opts = {}) {
 
 function closeSheet(fromHistory) {
   if (sheetEls.root.hidden) return;
+  closeChordEdit();
   sheetEls.root.hidden = true;
   sheetUI.song = null;
   if (!fromHistory && history.state && history.state.sheet) history.back();
@@ -2033,7 +2049,7 @@ sheetEls.editor.addEventListener("submit", (e) => {
     closeSheet(false);
     return;
   }
-  song.sheet = { text, key: readKeySelect(sheetEls.written) };
+  song.sheet = { text, key: readKeySelect(sheetEls.written), fit: !!(song.sheet && song.sheet.fit) };
   saveSets();
   showSheetMode(false);
 });
@@ -2196,3 +2212,198 @@ window.__onShare = () => {
   if (window.AndroidAudio && typeof window.AndroidAudio.takeSharedText === "function") receiveShare(window.AndroidAudio.takeSharedText());
 };
 window.__onShare(); // shared while the app was closed
+
+// ---------- Change a chord by tapping it on the sheet ----------
+
+const chordEditEls = {
+  root: document.getElementById("chord-edit"),
+  title: document.getElementById("chord-edit-title"),
+  close: document.getElementById("chord-edit-close"),
+  chips: document.getElementById("chord-edit-chips"),
+  form: document.getElementById("chord-edit-form"),
+  input: document.getElementById("chord-edit-input"),
+  remove: document.getElementById("chord-edit-remove"),
+};
+let chordEditSrc = null;
+
+function normalizeSheetText(text) {
+  return text.replace(/\r\n?/g, "\n").replace(/\t/g, "    ");
+}
+
+/**
+ * Writes a chord back into the sheet text at `src` (its place in the text).
+ * `chord` is in the key shown on screen; the text keeps its written-in key,
+ * so it's moved back before being written. null removes the chord.
+ */
+function writeChord(src, chord) {
+  const song = sheetUI.song;
+  const sheet = song.sheet;
+  const lines = normalizeSheetText(sheet.text).split("\n");
+  let line = lines[src.line];
+  if (line === undefined) return;
+  const token = chord ? chordText(transposeChord(chord, -mod12(song.key.pc - sheet.key.pc)), sheet.key) : "";
+  if (src.inline) {
+    line = line.slice(0, src.at) + (token ? "[" + token + "]" : "") + line.slice(src.at + src.len);
+  } else {
+    // Chord line above lyrics: keep the other chords in their columns.
+    let end = src.at + src.len;
+    let repl = token.padEnd(src.len);
+    if (token.length > src.len) {
+      let spaces = 0;
+      while (line[end + spaces] === " ") spaces++;
+      const atEnd = end + spaces >= line.length;
+      const extra = token.length - src.len;
+      end += atEnd ? Math.min(extra, spaces) : Math.min(extra, Math.max(0, spaces - 1));
+      repl = token;
+    }
+    line = line.slice(0, src.at) + repl + line.slice(end);
+  }
+  if (!line.trim() && !src.inline) lines.splice(src.line, 1); // last chord on a chord line
+  else lines[src.line] = line.replace(/\s+$/, "");
+  sheet.text = lines.join("\n");
+  saveSets();
+  renderSheetBody();
+}
+
+function openChordEdit(src, shown) {
+  if (!src) return;
+  chordEditSrc = src;
+  const key = sheetUI.song.key;
+  chordEditEls.title.textContent = "Change " + chordText(shown, key);
+  chordEditEls.chips.innerHTML = "";
+  const scale = SCALES[key.minor ? "minor" : "major"];
+  for (const c of keyChords(key)) {
+    const chord = {
+      pc: mod12(key.pc + scale.steps[c.degree - 1]),
+      quality: c.quality,
+      suffix: c.quality === "minor" ? "m" : c.quality === "diminished" ? "dim" : "",
+      bass: null,
+    };
+    const chip = chordChip(c, "button");
+    chip.type = "button";
+    const current = chord.pc === shown.pc && chord.quality === shown.quality;
+    chip.classList.toggle("picked", current);
+    chip.addEventListener("click", () => {
+      closeChordEdit();
+      writeChord(src, chord);
+    });
+    const li = document.createElement("li");
+    li.className = "chip-wrap";
+    li.appendChild(chip);
+    chordEditEls.chips.appendChild(li);
+  }
+  chordEditEls.input.value = "";
+  chordEditEls.input.placeholder = "Other chord, e.g. " + chordText(shown, key) + "7 or " + spellPc(key.pc, key) + "sus4";
+  chordEditEls.input.classList.remove("invalid");
+  chordEditEls.root.hidden = false;
+}
+
+function closeChordEdit() {
+  chordEditEls.root.hidden = true;
+  chordEditSrc = null;
+}
+
+chordEditEls.close.addEventListener("click", closeChordEdit);
+chordEditEls.root.addEventListener("click", (e) => {
+  if (e.target === chordEditEls.root) closeChordEdit(); // tap outside the panel
+});
+chordEditEls.remove.addEventListener("click", () => {
+  const src = chordEditSrc;
+  closeChordEdit();
+  writeChord(src, null);
+});
+chordEditEls.input.addEventListener("input", () => chordEditEls.input.classList.remove("invalid"));
+chordEditEls.form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const chord = parseChord(chordEditEls.input.value.trim());
+  if (!chord) {
+    chordEditEls.input.classList.add("invalid");
+    return;
+  }
+  const src = chordEditSrc;
+  closeChordEdit();
+  writeChord(src, chord);
+});
+
+// ---------- Less scrolling: tap to turn pages, fit to screen ----------
+
+const sheetPageEl = document.getElementById("sheet-page");
+const sheetFitBtn = document.getElementById("sheet-fit");
+const SHEET_FONT = 16; // px, the normal size (style.css .sheet-body)
+const SHEET_FONT_MIN = 12; // never shrink below this - it has to stay readable on a stand
+
+/** Lines kept from the previous screen when turning a page, so you don't lose your place. */
+function sheetOverlap() {
+  return Math.round(parseFloat(getComputedStyle(sheetEls.body).fontSize) * 1.45 * 2);
+}
+
+function updateSheetPage() {
+  const b = sheetEls.body;
+  const step = Math.max(1, b.clientHeight - sheetOverlap());
+  const pages = b.scrollHeight <= b.clientHeight + 2 ? 1 : 1 + Math.ceil((b.scrollHeight - b.clientHeight) / step);
+  const page = b.scrollTop + b.clientHeight >= b.scrollHeight - 2 ? pages : 1 + Math.round(b.scrollTop / step);
+  sheetPageEl.textContent = pages > 1 ? page + " / " + pages : "";
+}
+
+/** Shrinks the text (down to SHEET_FONT_MIN) until the whole sheet fits without scrolling. */
+function applySheetFit() {
+  const song = sheetUI.song;
+  const b = sheetEls.body;
+  const fit = !!(song && song.sheet && song.sheet.fit);
+  sheetFitBtn.setAttribute("aria-pressed", fit ? "true" : "false");
+  sheetFitBtn.classList.toggle("on", fit);
+  b.style.fontSize = "";
+  if (fit && b.clientHeight && b.scrollHeight > b.clientHeight) {
+    let lo = SHEET_FONT_MIN;
+    let hi = SHEET_FONT;
+    for (let k = 0; k < 7; k++) {
+      const mid = (lo + hi) / 2;
+      b.style.fontSize = mid + "px";
+      if (b.scrollHeight > b.clientHeight) hi = mid;
+      else lo = mid;
+    }
+    b.style.fontSize = lo + "px";
+  }
+  updateSheetPage();
+}
+
+function turnSheetPage(dir) {
+  const b = sheetEls.body;
+  if (b.scrollHeight <= b.clientHeight + 2) return;
+  b.scrollBy({ top: dir * (b.clientHeight - sheetOverlap()), behavior: "smooth" });
+  // A brief glow on the edge you're moving toward, so the tap visibly registered.
+  sheetEls.root.classList.remove("turn-next", "turn-prev");
+  void sheetEls.root.offsetWidth;
+  sheetEls.root.classList.add(dir > 0 ? "turn-next" : "turn-prev");
+}
+
+sheetEls.body.addEventListener("click", (e) => {
+  if (e.target.closest(".sc")) return; // tapping a chord edits it
+  const r = sheetEls.body.getBoundingClientRect();
+  turnSheetPage(e.clientY > r.top + r.height / 2 ? 1 : -1);
+});
+sheetEls.body.addEventListener("scroll", () => requestAnimationFrame(updateSheetPage), { passive: true });
+sheetEls.root.addEventListener("animationend", () => sheetEls.root.classList.remove("turn-next", "turn-prev"));
+
+// Bluetooth page-turner pedals act as keyboards (PageDown / arrows / space).
+document.addEventListener("keydown", (e) => {
+  if (sheetEls.root.hidden || sheetUI.editing || !chordEditEls.root.hidden) return;
+  if (e.target.closest && e.target.closest("input, textarea, select, button")) return;
+  const next = ["PageDown", "ArrowDown", "ArrowRight", " "];
+  const prev = ["PageUp", "ArrowUp", "ArrowLeft"];
+  if (next.includes(e.key)) turnSheetPage(1);
+  else if (prev.includes(e.key)) turnSheetPage(-1);
+  else return;
+  e.preventDefault();
+});
+
+sheetFitBtn.addEventListener("click", () => {
+  const sheet = sheetUI.song && sheetUI.song.sheet;
+  if (!sheet) return;
+  sheet.fit = !sheet.fit;
+  saveSets();
+  applySheetFit();
+});
+window.addEventListener("resize", () => {
+  if (!sheetEls.root.hidden && !sheetUI.editing) applySheetFit();
+});

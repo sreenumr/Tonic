@@ -83,7 +83,24 @@
         <div class="song-key" id="sheet-key"></div>
       </header>
       <div class="sheet-body" id="sheet-body"></div>
+      <!-- Tap a chord in the sheet to change or remove it. -->
+      <div class="chord-edit-backdrop" id="chord-edit" hidden>
+        <div class="chord-edit" role="dialog" aria-labelledby="chord-edit-title">
+          <div class="chord-edit-head">
+            <span class="chord-edit-title" id="chord-edit-title"></span>
+            <button type="button" class="icon-btn" id="chord-edit-close" aria-label="Close">✕</button>
+          </div>
+          <ol class="chord-row compact" id="chord-edit-chips"></ol>
+          <form class="chord-edit-custom" id="chord-edit-form">
+            <input class="song-add-title" id="chord-edit-input" type="text" maxlength="16" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Other chord, e.g. Gsus4 or D/F#" aria-label="Other chord" />
+            <button type="submit" class="pill-btn primary">Set</button>
+          </form>
+          <button type="button" class="pill-btn danger chord-edit-remove" id="chord-edit-remove">Remove this chord</button>
+        </div>
+      </div>
       <div class="sheet-foot" id="sheet-foot">
+        <button type="button" class="pill-btn" id="sheet-fit" aria-pressed="false">Fit to screen</button>
+        <span class="sheet-page" id="sheet-page" aria-live="polite"></span>
         <button type="button" class="pill-btn" id="sheet-edit">Edit sheet</button>
       </div>
       <form class="sheet-editor" id="sheet-editor" hidden>
