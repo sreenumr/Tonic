@@ -785,6 +785,7 @@ const setsUI = {
     }
   })(),
   lastKey: { pc: 7, minor: false },
+  picking: null, // id of the song whose planned chords are being picked
 };
 const setEls = {
   picker: document.getElementById("program-picker"),
@@ -1064,7 +1065,7 @@ function songRow(prog, si, song, i) {
     setsUI.lastKey = key;
     saveSets();
     select.value = key.pc + ":" + (key.minor ? 1 : 0);
-    renderSongChords(chordRow, song.key);
+    renderSongChords(chordRow, song);
   };
   select.addEventListener("change", () => setKey(readKeySelect(select)));
   const down = iconButton("", "Key down a semitone", "−", () => setKey({ pc: mod12(song.key.pc - 1), minor: song.key.minor }));
@@ -1073,27 +1074,203 @@ function songRow(prog, si, song, i) {
   top.appendChild(keyBox);
   li.appendChild(top);
 
-  renderSongChords(chordRow, song.key);
+  renderSongChords(chordRow, song);
   li.appendChild(chordRow);
   return li;
 }
 
-function renderSongChords(row, key) {
+/**
+ * A song's planned chords are stored as scale degrees (1-7), not names, so
+ * they follow the song when its key changes.
+ */
+function songPlan(song) {
+  if (!Array.isArray(song.plan)) song.plan = [];
+  return song.plan;
+}
+
+/** Plan view by default once a song has planned chords; the toggle overrides. */
+function showsPlan(song) {
+  return typeof song.showPlan === "boolean" ? song.showPlan : songPlan(song).length > 0;
+}
+
+function chordChip(chord, tag) {
+  const li = document.createElement(tag || "li");
+  li.className = "chord-chip quality-" + chord.quality;
+  const roman = document.createElement("span");
+  roman.className = "roman";
+  roman.textContent = chord.roman;
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = chord.label;
+  li.append(roman, name);
+  return li;
+}
+
+/** Small button at the start/end of a chord row. */
+function rowButton(cls, label, html, onClick) {
+  const li = document.createElement("li");
+  li.className = "row-btn-wrap";
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "row-btn " + cls;
+  b.setAttribute("aria-label", label);
+  b.innerHTML = html;
+  b.addEventListener("click", onClick);
+  li.appendChild(b);
+  return li;
+}
+
+/**
+ * The chord row under a song: either the key's scale chords (filtered by the
+ * Easy/Medium/... level) or the chords planned for this song - one toggle,
+ * same single row, so the card doesn't grow.
+ */
+/**
+ * Drag a planned chord sideways to change the playing order. A short press
+ * without movement stays a tap (remove the chord).
+ */
+function startChordDrag(e, li, row, song) {
+  if (e.button !== 0) return;
+  const startX = e.clientX;
+  const startY = e.clientY;
+  let dragging = false;
+  let offset = 0;
+  const picked = () => [...row.querySelectorAll("li.draggable")];
+
+  const move = (ev) => {
+    const dx = ev.clientX - startX;
+    if (!dragging) {
+      if (Math.abs(ev.clientY - startY) > 10) return end(); // vertical: let the list scroll
+      if (Math.abs(dx) < 8) return;
+      dragging = true;
+      li.dataset.dragged = "1";
+      li.classList.add("dragging");
+      try {
+        li.setPointerCapture(ev.pointerId);
+      } catch (err) {
+        /* ignore */
+      }
+    }
+    ev.preventDefault();
+    // Swap with a neighbour once the dragged chip passes its middle.
+    const x = ev.clientX;
+    const others = picked();
+    const idx = others.indexOf(li);
+    const prev = others[idx - 1];
+    const next = others[idx + 1];
+    if (prev && x < prev.getBoundingClientRect().left + prev.offsetWidth / 2) {
+      const before = li.getBoundingClientRect().left;
+      row.insertBefore(li, prev);
+      offset += before - li.getBoundingClientRect().left;
+    } else if (next && x > next.getBoundingClientRect().left + next.offsetWidth / 2) {
+      const before = li.getBoundingClientRect().left;
+      row.insertBefore(li, next.nextSibling);
+      offset += before - li.getBoundingClientRect().left;
+    }
+    li.style.transform = "translateX(" + (dx + offset) + "px)";
+  };
+
+  const end = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+    if (!dragging) return;
+    song.plan = picked().map((el) => Number(el.dataset.degree));
+    saveSets();
+    // Let the click that follows pointerup see the drag flag, then redraw.
+    setTimeout(() => renderSongChords(row, song), 0);
+  };
+
+  window.addEventListener("pointermove", move, { passive: false });
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+}
+
+function renderSongChords(row, song) {
   row.innerHTML = "";
-  const all = keyChords(key);
-  for (const d of LEVEL_DEGREES[setsUI.level] || LEVEL_DEGREES.full) {
-    const chord = all[d - 1];
-    const li = document.createElement("li");
-    li.className = "chord-chip quality-" + chord.quality;
-    const roman = document.createElement("span");
-    roman.className = "roman";
-    roman.textContent = chord.roman;
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = chord.label;
-    li.append(roman, name);
-    row.appendChild(li);
+  const all = keyChords(song.key);
+  const plan = songPlan(song);
+  const rerender = () => renderSongChords(row, song);
+
+  // Picking: the planned chords first, in playing order (drag sideways to
+  // reorder), then the key's other chords dimmed; tap to add/remove.
+  if (setsUI.picking === song.id) {
+    row.classList.add("picking");
+    const ordered = [...plan.filter((d) => all[d - 1]).map((d) => all[d - 1]), ...all.filter((c) => !plan.includes(c.degree))];
+    for (const chord of ordered) {
+      const at = plan.indexOf(chord.degree);
+      const chip = chordChip(chord, "button");
+      chip.type = "button";
+      chip.classList.toggle("picked", at >= 0);
+      chip.setAttribute("aria-pressed", at >= 0 ? "true" : "false");
+      if (at >= 0) chip.querySelector(".roman").textContent = String(at + 1);
+      const li = document.createElement("li");
+      li.className = "chip-wrap";
+      li.dataset.degree = chord.degree;
+      chip.addEventListener("click", () => {
+        if (li.dataset.dragged) return; // the tap ended a drag
+        const i = plan.indexOf(chord.degree);
+        if (i >= 0) plan.splice(i, 1);
+        else plan.push(chord.degree);
+        saveSets();
+        rerender();
+      });
+      if (at >= 0) {
+        li.classList.add("draggable");
+        li.addEventListener("pointerdown", (e) => startChordDrag(e, li, row, song));
+      }
+      li.appendChild(chip);
+      row.appendChild(li);
+    }
+    row.appendChild(
+      rowButton("done", "Done picking chords", "✓", () => {
+        setsUI.picking = null;
+        song.showPlan = true;
+        saveSets();
+        rerender();
+      }),
+    );
+    return;
   }
+  row.classList.remove("picking");
+
+  const planView = showsPlan(song);
+  row.appendChild(
+    rowButton(
+      "view" + (planView ? " plan" : ""),
+      planView ? "Showing planned chords - show scale chords" : "Showing scale chords - show planned chords",
+      '<span class="' + (planView ? "" : "on") + '">Scale</span><span class="' + (planView ? "on" : "") + '">Plan</span>',
+      () => {
+        song.showPlan = !planView;
+        saveSets();
+        rerender();
+      },
+    ),
+  );
+
+  if (!planView) {
+    for (const d of LEVEL_DEGREES[setsUI.level] || LEVEL_DEGREES.full) row.appendChild(chordChip(all[d - 1]));
+    return;
+  }
+
+  const pick = () => {
+    setsUI.picking = song.id;
+    rerender();
+  };
+  if (!plan.length) {
+    const li = document.createElement("li");
+    li.className = "plan-empty-wrap";
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "plan-empty";
+    b.textContent = "+ Pick the chords you'll play";
+    b.addEventListener("click", pick);
+    li.appendChild(b);
+    row.appendChild(li);
+    return;
+  }
+  for (const d of plan) if (all[d - 1]) row.appendChild(chordChip(all[d - 1]));
+  row.appendChild(rowButton("edit", "Edit planned chords", "✎", pick));
 }
 
 // ---------- Set shortcuts (jump buttons next to "+ Set") ----------
