@@ -1048,7 +1048,13 @@ function songRow(prog, si, song, i) {
   const title = document.createElement("span");
   title.className = "song-title";
   title.textContent = song.title;
-  top.appendChild(title);
+  const hasSheet = !!(song.sheet && song.sheet.text && song.sheet.text.trim());
+  const sheetBtn = iconButton("sheet-btn" + (hasSheet ? " has-sheet" : ""), hasSheet ? "Open chord sheet" : "Add a chord sheet", "", () =>
+    openSheet(song, set, i),
+  );
+  sheetBtn.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10A.5.5 0 0 1 7 20Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 11h5M10 14.5h5M10 18h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
+  top.append(title, sheetBtn);
 
   const chordRow = document.createElement("ol");
   chordRow.className = "chord-row compact";
@@ -1682,3 +1688,343 @@ function endSongDrag(e) {
 }
 
 renderSets();
+
+// ---------- Chord sheets (lyrics + chords, transposed to the song's key) ----------
+//
+// The pasted text is stored as-is with the key its chords were written in
+// (song.sheet = { text, key }). It's parsed every time it's shown, and each
+// chord is moved by (song key - written key), so changing the song's key
+// changes the sheet too.
+
+const NOTE_PCS = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+const SHARP_NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+const FLAT_NAMES = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B"];
+// Out-of-key chords in C major / A minor: the names players actually use.
+const NEUTRAL_NAMES = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
+const CHORD_RE = /^([A-G])([#b♯♭]?)([^\s/]*)(?:\/([A-G])([#b♯♭]?))?$/;
+const SUFFIX_RE = /^(?:maj|min|m|M|dim|aug|sus|add|no|°|ø|\+|-|\d|\(|\)|b|#|♭|♯|,)*$/;
+const BAR_TOKENS = /^(\|+|-+|\/|%|x\d+|\(?x\d+\)?|N\.?C\.?|\(|\))$/i;
+const SECTION_RE = /^\s*(?:\[\s*([^\]]+?)\s*\]|((?:intro|verse|pre-?chorus|chorus|bridge|interlude|outro|hook|solo|antara|mukhda|refrain|tag|coda)\b[^:]*):?)\s*$/i;
+
+function accidental(a) {
+  return a === "#" || a === "♯" ? 1 : a === "b" || a === "♭" ? -1 : 0;
+}
+
+/** "F#m7/C#" -> { pc, quality, suffix, bass } or null if it isn't a chord. */
+function parseChord(token) {
+  const m = CHORD_RE.exec(token.replace(/^\(|\)$/g, ""));
+  if (!m || !SUFFIX_RE.test(m[3])) return null;
+  const s = m[3];
+  const quality = /^(dim|°|ø|m7b5|m7♭5)/.test(s) ? "diminished" : /^(m(?!aj)|min|-)/.test(s) ? "minor" : "major";
+  return {
+    pc: mod12(NOTE_PCS[m[1]] + accidental(m[2])),
+    quality,
+    suffix: s,
+    bass: m[4] ? mod12(NOTE_PCS[m[4]] + accidental(m[5])) : null,
+  };
+}
+
+function isChordLine(line) {
+  const tokens = line.trim().split(/\s+/).filter((t) => t && !BAR_TOKENS.test(t));
+  return tokens.length > 0 && tokens.every((t) => parseChord(t));
+}
+
+/**
+ * Text -> lines of segments. Handles both "chords on the line above the
+ * lyrics" (what chord sites show) and inline "[G]lyrics".
+ */
+function parseSheet(text) {
+  const raw = text.replace(/\r\n?/g, "\n").replace(/\t/g, "    ").split("\n");
+  const lines = [];
+  for (let i = 0; i < raw.length; i++) {
+    const line = raw[i].replace(/\s+$/, "");
+    if (!line.trim()) {
+      lines.push({ type: "blank" });
+      continue;
+    }
+    const sec = SECTION_RE.exec(line);
+    if (sec && !parseChord((sec[1] || "").trim())) {
+      lines.push({ type: "label", text: (sec[1] || sec[2]).trim() });
+      continue;
+    }
+    if (isChordLine(line)) {
+      // Chord positions within the line.
+      const chords = [];
+      const re = /\S+/g;
+      let m;
+      while ((m = re.exec(line))) chords.push({ at: m.index, token: m[0], chord: parseChord(m[0]) });
+      const next = raw[i + 1] !== undefined ? raw[i + 1].replace(/\s+$/, "") : "";
+      const lyricBelow = next.trim() && !isChordLine(next) && !SECTION_RE.test(next) && !/\[[^\]]+\]/.test(next);
+      if (lyricBelow) {
+        // Cut the lyric line at each chord's column.
+        const lyric = next.padEnd(line.length);
+        const real = chords.filter((c) => c.chord);
+        const segs = [];
+        if (real.length && real[0].at > 0) segs.push({ chord: null, text: lyric.slice(0, real[0].at) });
+        real.forEach((c, k) => {
+          const end = k + 1 < real.length ? real[k + 1].at : lyric.length;
+          segs.push({ chord: c.chord, text: lyric.slice(c.at, end) });
+        });
+        lines.push({ type: "lyric", segs });
+        i++;
+      } else {
+        lines.push({ type: "chords", segs: chords.map((c) => (c.chord ? { chord: c.chord, text: "" } : { chord: null, text: c.token })) });
+      }
+      continue;
+    }
+    // Inline [G] chords (or plain lyrics).
+    const segs = [];
+    const parts = line.split(/\[([^\]]*)\]/);
+    let pending = null;
+    parts.forEach((part, k) => {
+      if (k % 2 === 1) {
+        const chord = parseChord(part.trim());
+        if (chord) {
+          if (pending) segs.push({ chord: pending, text: "" });
+          pending = chord;
+        } else {
+          segs.push({ chord: pending, text: "[" + part + "]" });
+          pending = null;
+        }
+      } else if (part || pending) {
+        segs.push({ chord: pending, text: part });
+        pending = null;
+      }
+    });
+    if (pending) segs.push({ chord: pending, text: "" });
+    const onlyChords = segs.every((s) => !s.text.trim());
+    lines.push({ type: onlyChords ? "chords" : "lyric", segs });
+  }
+  return lines;
+}
+
+function sheetChords(text) {
+  const out = [];
+  for (const line of parseSheet(text)) for (const s of line.segs || []) if (s.chord) out.push(s.chord);
+  return out;
+}
+
+/** Scale degree (1-7) of a chord in a key, or 0 if it's outside the key. */
+function chordDegree(chord, key) {
+  const scale = SCALES[key.minor ? "minor" : "major"];
+  for (let d = 0; d < 7; d++) {
+    if (mod12(key.pc + scale.steps[d]) === chord.pc && scale.qual[d] === chord.quality) return d + 1;
+  }
+  return 0;
+}
+
+/** Best-fitting key for a list of chords: most chords in the key, first/last chord on the tonic. */
+function guessKey(chords, prefer) {
+  if (!chords.length) return prefer;
+  let best = prefer;
+  let bestScore = -1;
+  const candidates = [prefer];
+  for (const minor of [false, true]) for (let pc = 0; pc < 12; pc++) candidates.push({ pc, minor });
+  for (const key of candidates) {
+    let score = 0;
+    for (const c of chords) if (chordDegree(c, key)) score += 2;
+    if (chordDegree(chords[0], key) === 1) score += 3;
+    if (chordDegree(chords[chords.length - 1], key) === 1) score += 2;
+    if (score > bestScore) {
+      best = key;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/** How a pitch is spelled in a key: its scale letter if it's in the key, otherwise by key signature. */
+function spellPc(pc, key) {
+  const scale = SCALES[key.minor ? "minor" : "major"];
+  const d = scale.steps.findIndex((st) => mod12(key.pc + st) === pc);
+  if (d >= 0) return keyChords(key)[d].label.replace(/(m|°)$/, "");
+  // Out of key: name it by its place from the tonic the way players do -
+  // ♭2, ♭3, ♯4, ♭6, ♭7 (B♭ in G, not A♯) - e.g. B♭ = the ♭7 of C.
+  const tonic = (key.minor ? MINOR_TONICS : MAJOR_TONICS)[mod12(key.pc)];
+  const interval = mod12(pc - key.pc);
+  const letterStep = [0, 1, 1, 2, 2, 3, 3, 4, 5, 5, 6, 6][interval];
+  const letterIdx = (LETTERS.indexOf(tonic[0]) + letterStep) % 7;
+  const diff = mod12(pc - LETTER_PCS[letterIdx]);
+  if (diff === 0 || diff === 1 || diff === 11) {
+    const name = LETTERS[letterIdx] + (diff === 1 ? "♯" : diff === 11 ? "♭" : "");
+    return FRIENDLY[name] || name;
+  }
+  const major = key.minor ? mod12(key.pc + 3) : key.pc;
+  if (major === 0) return NEUTRAL_NAMES[pc];
+  return [5, 10, 3, 8, 1].includes(major) ? FLAT_NAMES[pc] : SHARP_NAMES[pc];
+}
+
+function transposeChord(chord, shift) {
+  return { ...chord, pc: mod12(chord.pc + shift), bass: chord.bass === null ? null : mod12(chord.bass + shift) };
+}
+
+function chordText(chord, key) {
+  const suffix = chord.suffix.replace(/#/g, "♯").replace(/(\d)b/g, "$1♭");
+  return spellPc(chord.pc, key) + suffix + (chord.bass === null ? "" : "/" + spellPc(chord.bass, key));
+}
+
+const sheetEls = {
+  root: document.getElementById("sheet"),
+  back: document.getElementById("sheet-back"),
+  title: document.getElementById("sheet-title"),
+  sub: document.getElementById("sheet-sub"),
+  key: document.getElementById("sheet-key"),
+  body: document.getElementById("sheet-body"),
+  foot: document.getElementById("sheet-foot"),
+  edit: document.getElementById("sheet-edit"),
+  editor: document.getElementById("sheet-editor"),
+  text: document.getElementById("sheet-text"),
+  written: document.getElementById("sheet-written"),
+  cancel: document.getElementById("sheet-cancel"),
+};
+const sheetUI = { song: null, set: null, index: 0, editing: false, writtenTouched: false };
+
+function chordBadge(chord, key, plan) {
+  const span = document.createElement("span");
+  const deg = chordDegree(chord, key);
+  span.className = "sc quality-" + chord.quality + (deg ? "" : " outside");
+  span.textContent = chordText(chord, key);
+  const at = deg ? plan.indexOf(deg) : -1;
+  if (at >= 0) {
+    span.classList.add("planned");
+    const n = document.createElement("sup");
+    n.textContent = at + 1;
+    span.appendChild(n);
+  }
+  if (!deg) span.title = "Not in " + keyName(key);
+  return span;
+}
+
+function renderSheetBody() {
+  const song = sheetUI.song;
+  const sheet = song.sheet;
+  const key = song.key;
+  const shift = mod12(key.pc - sheet.key.pc);
+  const plan = songPlan(song);
+  sheetEls.sub.textContent =
+    (shift ? "Written in " + keyName(sheet.key).replace(" major", "").replace(" minor", "m") + " · " : "") + sheetUI.set.name + " · #" + (sheetUI.index + 1);
+  sheetEls.body.innerHTML = "";
+  for (const line of parseSheet(sheet.text)) {
+    const div = document.createElement("div");
+    if (line.type === "blank") {
+      div.className = "sheet-blank";
+    } else if (line.type === "label") {
+      div.className = "sheet-label";
+      div.textContent = line.text;
+    } else {
+      div.className = "sheet-line" + (line.type === "chords" ? " chords-only" : "") + (line.segs.some((s) => s.chord) ? " has-chords" : "");
+      for (const seg of line.segs) {
+        if (!seg.chord) {
+          div.appendChild(document.createTextNode(seg.text));
+          continue;
+        }
+        // The chord sits above the first word after it; the rest of the
+        // text flows (and wraps) normally.
+        const m = /^(\S*)([\s\S]*)$/.exec(seg.text);
+        const anchor = document.createElement("span");
+        anchor.className = "sheet-seg";
+        anchor.appendChild(chordBadge(transposeChord(seg.chord, shift), key, plan));
+        const word = document.createElement("span");
+        word.className = "sheet-word";
+        word.textContent = m[1] || " ";
+        anchor.appendChild(word);
+        div.appendChild(anchor);
+        if (m[2]) div.appendChild(document.createTextNode(m[2]));
+      }
+    }
+    sheetEls.body.appendChild(div);
+  }
+}
+
+function renderSheetKey() {
+  const song = sheetUI.song;
+  sheetEls.key.innerHTML = "";
+  const select = document.createElement("select");
+  select.className = "key-select";
+  select.setAttribute("aria-label", "Key for " + song.title);
+  fillKeySelect(select, song.key);
+  const setKey = (key) => {
+    song.key = key;
+    setsUI.lastKey = key;
+    saveSets();
+    select.value = key.pc + ":" + (key.minor ? 1 : 0);
+    if (!sheetUI.editing) renderSheetBody();
+  };
+  select.addEventListener("change", () => setKey(readKeySelect(select)));
+  sheetEls.key.append(
+    iconButton("", "Key down a semitone", "−", () => setKey({ pc: mod12(song.key.pc - 1), minor: song.key.minor })),
+    select,
+    iconButton("", "Key up a semitone", "+", () => setKey({ pc: mod12(song.key.pc + 1), minor: song.key.minor })),
+  );
+}
+
+function showSheetMode(editing) {
+  sheetUI.editing = editing;
+  sheetEls.editor.hidden = !editing;
+  sheetEls.body.hidden = editing;
+  sheetEls.foot.hidden = editing;
+  sheetEls.key.hidden = editing;
+  if (editing) {
+    const sheet = sheetUI.song.sheet;
+    sheetEls.text.value = sheet ? sheet.text : "";
+    sheetUI.writtenTouched = !!sheet;
+    fillKeySelect(sheetEls.written, sheet ? sheet.key : sheetUI.song.key);
+    sheetEls.text.focus();
+  } else {
+    renderSheetBody();
+  }
+}
+
+function openSheet(song, set, index) {
+  sheetUI.song = song;
+  sheetUI.set = set;
+  sheetUI.index = index;
+  sheetEls.title.textContent = song.title;
+  sheetEls.sub.textContent = set.name + " · #" + (index + 1);
+  renderSheetKey();
+  sheetEls.root.hidden = false;
+  sheetEls.body.scrollTop = 0;
+  showSheetMode(!(song.sheet && song.sheet.text && song.sheet.text.trim()));
+  // So the phone's back button closes the sheet instead of leaving the app.
+  try {
+    history.pushState({ sheet: true }, "");
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function closeSheet(fromHistory) {
+  if (sheetEls.root.hidden) return;
+  sheetEls.root.hidden = true;
+  sheetUI.song = null;
+  if (!fromHistory && history.state && history.state.sheet) history.back();
+  renderSets(); // key may have changed; sheet icon may have appeared
+}
+
+sheetEls.back.addEventListener("click", () => closeSheet(false));
+window.addEventListener("popstate", () => closeSheet(true));
+sheetEls.edit.addEventListener("click", () => showSheetMode(true));
+sheetEls.cancel.addEventListener("click", () => {
+  if (sheetUI.song.sheet && sheetUI.song.sheet.text.trim()) showSheetMode(false);
+  else closeSheet(false);
+});
+sheetEls.written.addEventListener("change", () => (sheetUI.writtenTouched = true));
+// Until you pick it yourself, "written in" follows the chords you paste.
+sheetEls.text.addEventListener("input", () => {
+  if (sheetUI.writtenTouched) return;
+  fillKeySelect(sheetEls.written, guessKey(sheetChords(sheetEls.text.value), sheetUI.song.key));
+});
+sheetEls.editor.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = sheetEls.text.value.replace(/\s+$/, "");
+  const song = sheetUI.song;
+  if (!text.trim()) {
+    delete song.sheet;
+    saveSets();
+    closeSheet(false);
+    return;
+  }
+  song.sheet = { text, key: readKeySelect(sheetEls.written) };
+  saveSets();
+  showSheetMode(false);
+});

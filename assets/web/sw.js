@@ -2,7 +2,7 @@
 // instantly (and works offline once loaded) while leaving the analysis
 // endpoints (/api/analyze, /ws) untouched - those need a live server, and
 // a WebSocket upgrade can't be intercepted by a service worker anyway.
-const CACHE_NAME = "tonic-shell-v23";
+const CACHE_NAME = "tonic-shell-v24";
 const SHELL_FILES = [
   "/",
   "/style.css",

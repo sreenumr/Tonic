@@ -72,6 +72,33 @@
       </section>
     </main>
 
+    <!-- Chord sheet for one song (lyrics + chords, follows the song's key). -->
+    <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+      <header class="sheet-head">
+        <button type="button" class="icon-btn" id="sheet-back" aria-label="Back">←</button>
+        <div class="sheet-titles">
+          <h2 class="sheet-title" id="sheet-title"></h2>
+          <p class="sheet-sub" id="sheet-sub"></p>
+        </div>
+        <div class="song-key" id="sheet-key"></div>
+      </header>
+      <div class="sheet-body" id="sheet-body"></div>
+      <div class="sheet-foot" id="sheet-foot">
+        <button type="button" class="pill-btn" id="sheet-edit">Edit sheet</button>
+      </div>
+      <form class="sheet-editor" id="sheet-editor" hidden>
+        <p class="sheet-hint">Paste the part you perform: chords above the lyrics, or chords in brackets like <b>[G]Tum hi [D]ho</b>.</p>
+        <textarea class="sheet-text" id="sheet-text" spellcheck="false" autocomplete="off" aria-label="Chord sheet"></textarea>
+        <div class="sheet-editor-bar">
+          <label class="sheet-written">Chords written in
+            <select class="key-select" id="sheet-written" aria-label="Key the pasted chords are written in"></select>
+          </label>
+          <button type="button" class="pill-btn" id="sheet-cancel">Cancel</button>
+          <button type="submit" class="pill-btn primary">Save</button>
+        </div>
+      </form>
+    </section>
+
     <footer class="dock">
       <p class="status" id="status" aria-live="polite"></p>
       <div class="dock-row">
